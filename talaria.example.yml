@@ -1,0 +1,27 @@
+Node:
+  Name: "talaria-node-1"
+  ListenAddress: "0.0.0.0"
+  ListenPort: 7000
+
+TLS:
+  CertFile: "certs/node1.crt"
+  KeyFile:  "certs/node1.key"
+  CAFile:   "certs/ca.crt"
+  # AllowedDNs is a list of substrings matched against each peer's Subject DN.
+  # A peer whose cert DN does not contain at least one entry will be rejected.
+  # Leave empty to allow any DN signed by the CA.
+  AllowedDNs:
+    - "CN=talaria-node-2"
+
+Peers:
+  - Name: "node-2"
+    Address: "127.0.0.1"
+    Port: 7001
+    HeartbeatInterval: "30s"
+
+GlobalLog:
+  Filename: ""        # empty = stdout
+  MaxSize: 20         # MB
+  MaxBackups: 5
+  MaxAge: 28          # days
+  Compress: false

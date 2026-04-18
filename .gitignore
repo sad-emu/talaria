@@ -1,0 +1,25 @@
+# Binaries
+talaria
+*.exe
+
+# Config with secrets (keep example)
+talaria.yml
+!talaria.example.yml
+
+# Certs
+*.pem
+*.crt
+*.key
+*.p12
+
+# Logs
+*.log
+crash.txt
+
+# Build artifacts
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
