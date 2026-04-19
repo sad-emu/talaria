@@ -311,13 +311,13 @@ func TestHandleMessage_NewMessageTypes(t *testing.T) {
 			name:    "file status update",
 			msgType: MsgFileStatusUpdate,
 			payload: FileStatusUpdatePayload{
-				ID:        "status-1",
-				RequestID: "data-req-1",
-				Timestamp: 127,
-				NodeName:  "server-a",
-				UUID:      "file-1",
-				Status:    "PROGRESS",
-				Message:   "50%",
+				ID:         "status-1",
+				TransferId: "data-req-1",
+				Timestamp:  127,
+				NodeName:   "server-a",
+				UUID:       "file-1",
+				Status:     "PROGRESS",
+				Message:    "50%",
 			},
 			handlers: func(h *Handlers, set func(any)) {
 				h.FileStatusUpdate = func(p FileStatusUpdatePayload) error {
@@ -413,105 +413,164 @@ func TestHandleMessage_NilHandler(t *testing.T) {
 }
 
 func TestHandleMessage_MetaPermissionsRespPayload(t *testing.T) {
-    client, server := net.Pipe()
-    defer client.Close()
-    defer server.Close()
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
 
-    want := MetaPermissionsRespPayload{
-        ID:                  "meta-perm-resp-1",
-        RequestID:           "meta-req-1",
-        Timestamp:           1712345678,
-        NodeName:            "server-a",
-        AvailableConnectors: []string{"feed_a", "feed_c"},
-    }
+	want := MetaPermissionsRespPayload{
+		ID:                  "meta-perm-resp-1",
+		RequestID:           "meta-req-1",
+		Timestamp:           1712345678,
+		NodeName:            "server-a",
+		AvailableConnectors: []string{"feed_a", "feed_c"},
+	}
 
-    writeErr := make(chan error, 1)
-    go func() {
-        writeErr <- WriteMessage(server, MsgMetaPermResp, want)
-    }()
+	writeErr := make(chan error, 1)
+	go func() {
+		writeErr <- WriteMessage(server, MsgMetaPermResp, want)
+	}()
 
-    msgType, body, err := ReadMessage(client)
-    if err != nil {
-        t.Fatalf("ReadMessage() error = %v", err)
-    }
-    if err := <-writeErr; err != nil {
-        t.Fatalf("WriteMessage() error = %v", err)
-    }
-    if msgType != MsgMetaPermResp {
-        t.Fatalf("ReadMessage() type = %v, want %v", msgType, MsgMetaPermResp)
-    }
+	msgType, body, err := ReadMessage(client)
+	if err != nil {
+		t.Fatalf("ReadMessage() error = %v", err)
+	}
+	if err := <-writeErr; err != nil {
+		t.Fatalf("WriteMessage() error = %v", err)
+	}
+	if msgType != MsgMetaPermResp {
+		t.Fatalf("ReadMessage() type = %v, want %v", msgType, MsgMetaPermResp)
+	}
 
-    var handled MetaPermissionsRespPayload
-    gotAny, err := HandleMessage(msgType, body, Handlers{
-        MetaPermsResp: func(p MetaPermissionsRespPayload) error {
-            handled = p
-            return nil
-        },
-    })
-    if err != nil {
-        t.Fatalf("HandleMessage() error = %v", err)
-    }
+	var handled MetaPermissionsRespPayload
+	gotAny, err := HandleMessage(msgType, body, Handlers{
+		MetaPermsResp: func(p MetaPermissionsRespPayload) error {
+			handled = p
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
 
-    got, ok := gotAny.(MetaPermissionsRespPayload)
-    if !ok {
-        t.Fatalf("HandleMessage() returned %T, want MetaPermissionsRespPayload", gotAny)
-    }
-    if !reflect.DeepEqual(got, want) {
-        t.Fatalf("returned payload = %#v, want %#v", got, want)
-    }
-    if !reflect.DeepEqual(handled, want) {
-        t.Fatalf("handler payload = %#v, want %#v", handled, want)
-    }
+	got, ok := gotAny.(MetaPermissionsRespPayload)
+	if !ok {
+		t.Fatalf("HandleMessage() returned %T, want MetaPermissionsRespPayload", gotAny)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("returned payload = %#v, want %#v", got, want)
+	}
+	if !reflect.DeepEqual(handled, want) {
+		t.Fatalf("handler payload = %#v, want %#v", handled, want)
+	}
 }
 
 func TestHandleMessage_MetaReqPayload_WithRequestConnector(t *testing.T) {
-    client, server := net.Pipe()
-    defer client.Close()
-    defer server.Close()
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
 
-    want := MetaReqPayload{
-        ID:               "meta-req-connector-1",
-        Timestamp:        1712345678,
-        NodeName:         "client-a",
-        RequestType:      "FILES",
-        RequestConnector: "feed_a",
-    }
+	want := MetaReqPayload{
+		ID:               "meta-req-connector-1",
+		Timestamp:        1712345678,
+		NodeName:         "client-a",
+		RequestType:      "FILES",
+		RequestConnector: "feed_a",
+	}
 
-    writeErr := make(chan error, 1)
-    go func() {
-        writeErr <- WriteMessage(server, MsgMetaReq, want)
-    }()
+	writeErr := make(chan error, 1)
+	go func() {
+		writeErr <- WriteMessage(server, MsgMetaReq, want)
+	}()
 
-    msgType, body, err := ReadMessage(client)
-    if err != nil {
-        t.Fatalf("ReadMessage() error = %v", err)
-    }
-    if err := <-writeErr; err != nil {
-        t.Fatalf("WriteMessage() error = %v", err)
-    }
-    if msgType != MsgMetaReq {
-        t.Fatalf("ReadMessage() type = %v, want %v", msgType, MsgMetaReq)
-    }
+	msgType, body, err := ReadMessage(client)
+	if err != nil {
+		t.Fatalf("ReadMessage() error = %v", err)
+	}
+	if err := <-writeErr; err != nil {
+		t.Fatalf("WriteMessage() error = %v", err)
+	}
+	if msgType != MsgMetaReq {
+		t.Fatalf("ReadMessage() type = %v, want %v", msgType, MsgMetaReq)
+	}
 
-    var handled MetaReqPayload
-    gotAny, err := HandleMessage(msgType, body, Handlers{
-        MetaReq: func(p MetaReqPayload) error {
-            handled = p
-            return nil
-        },
-    })
-    if err != nil {
-        t.Fatalf("HandleMessage() error = %v", err)
-    }
+	var handled MetaReqPayload
+	gotAny, err := HandleMessage(msgType, body, Handlers{
+		MetaReq: func(p MetaReqPayload) error {
+			handled = p
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
 
-    got, ok := gotAny.(MetaReqPayload)
-    if !ok {
-        t.Fatalf("HandleMessage() returned %T, want MetaReqPayload", gotAny)
-    }
-    if !reflect.DeepEqual(got, want) {
-        t.Fatalf("returned payload = %#v, want %#v", got, want)
-    }
-    if !reflect.DeepEqual(handled, want) {
-        t.Fatalf("handler payload = %#v, want %#v", handled, want)
-    }
+	got, ok := gotAny.(MetaReqPayload)
+	if !ok {
+		t.Fatalf("HandleMessage() returned %T, want MetaReqPayload", gotAny)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("returned payload = %#v, want %#v", got, want)
+	}
+	if !reflect.DeepEqual(handled, want) {
+		t.Fatalf("handler payload = %#v, want %#v", handled, want)
+	}
+}
+
+func TestHandleMessage_DataRespAckPayload(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	want := DataRespAckPayload{
+		ID:         "ack-1",
+		DataRespID: "resp-1",
+		RequestID:  "req-1",
+		TransferId: "xfer-1",
+		Timestamp:  1712345678,
+		NodeName:   "client-a",
+		UUID:       "file-1",
+		Offset:     0,
+		Length:     4096,
+		DataHash:   "abc123",
+		Status:     "RECEIVED",
+		Message:    "chunk accepted",
+	}
+
+	writeErr := make(chan error, 1)
+	go func() {
+		writeErr <- WriteMessage(server, MsgDataRespAck, want)
+	}()
+
+	msgType, body, err := ReadMessage(client)
+	if err != nil {
+		t.Fatalf("ReadMessage() error = %v", err)
+	}
+	if err := <-writeErr; err != nil {
+		t.Fatalf("WriteMessage() error = %v", err)
+	}
+	if msgType != MsgDataRespAck {
+		t.Fatalf("ReadMessage() type = %v, want %v", msgType, MsgDataRespAck)
+	}
+
+	var handled DataRespAckPayload
+	gotAny, err := HandleMessage(msgType, body, Handlers{
+		DataRespAck: func(p DataRespAckPayload) error {
+			handled = p
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+
+	got, ok := gotAny.(DataRespAckPayload)
+	if !ok {
+		t.Fatalf("HandleMessage() returned %T, want DataRespAckPayload", gotAny)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("returned payload = %#v, want %#v", got, want)
+	}
+	if !reflect.DeepEqual(handled, want) {
+		t.Fatalf("handler payload = %#v, want %#v", handled, want)
+	}
 }

@@ -29,6 +29,8 @@ const (
 	MsgDataResp MessageType = 0x07
 
 	MsgFileStatusUpdate MessageType = 0x08 // Server or Client updates the other about the status of a file (e.g. "DONE", "ERROR", "PROGRESS")
+	// Client acknowledges a DataResp chunk for sender-side progress visibility.
+	MsgDataRespAck MessageType = 0x09
 )
 
 // maxMessageSize caps incoming messages to protect against malformed frames.
@@ -81,34 +83,52 @@ type MetaPermissionsRespPayload struct {
 }
 
 type DataReqPayload struct {
-	ID        string `json:"id"`
-	RequestID string `json:"req_id"` // ID of the corresponding MetaDataReq
-	Timestamp int64  `json:"ts"`     // Unix nanoseconds
-	NodeName  string `json:"node"`
-	UUID      string `json:"uuid"` // UUID of the file being requested
-	Offset    int64  `json:"offset"`
-	Length    int64  `json:"length"`
+	ID         string `json:"id"`
+	RequestID  string `json:"req_id"`      // ID of the corresponding MetaDataReq
+	TransferId string `json:"transfer_id"` // UUID for the overall file transfer, shared across all chunks, picked by the client. Will be used to prevent duplicate/conflicting transfers and for logging/tracing.
+	Timestamp  int64  `json:"ts"`          // Unix nanoseconds
+	NodeName   string `json:"node"`
+	UUID       string `json:"uuid"` // UUID of the file being requested
+	Offset     int64  `json:"offset"`
+	Length     int64  `json:"length"`
 }
 
 type DataRespPayload struct {
-	ID        string `json:"id"`
-	RequestID string `json:"req_id"` // ID of the corresponding DataReq
-	Timestamp int64  `json:"ts"`     // Unix nanoseconds
-	NodeName  string `json:"node"`
-	UUID      string `json:"uuid"` // UUID of the file being served
-	Offset    int64  `json:"offset"`
-	Data      []byte `json:"data"`      // File chunk data, or error message if serving failed
-	DataHash  string `json:"data_hash"` // Hex string of SHA256 hash of the data for integrity verification
+	ID         string `json:"id"`
+	RequestID  string `json:"req_id"`
+	TransferId string `json:"transfer_id"`
+	Timestamp  int64  `json:"ts"`
+	NodeName   string `json:"node"`
+	UUID       string `json:"uuid"`
+	Offset     int64  `json:"offset"`
+	Data       []byte `json:"data"`
+	DataHash   string `json:"data_hash"`
+}
+
+// DataRespAckPayload acknowledges a received DataResp chunk.
+type DataRespAckPayload struct {
+	ID         string `json:"id"`
+	DataRespID string `json:"data_resp_id"`        // ID of the DataResp being acknowledged
+	RequestID  string `json:"req_id,omitempty"`    // Optional corresponding DataReq ID
+	TransferId string `json:"transfer_id"`         // Transfer correlation id
+	Timestamp  int64  `json:"ts"`                  // Unix nanoseconds
+	NodeName   string `json:"node"`                // Client node acknowledging
+	UUID       string `json:"uuid"`                // File UUID
+	Offset     int64  `json:"offset"`              // Chunk offset being acknowledged
+	Length     int64  `json:"length"`              // Chunk length acknowledged
+	DataHash   string `json:"data_hash,omitempty"` // Optional integrity correlation
+	Status     string `json:"status"`              // e.g. RECEIVED, WRITTEN, ERROR
+	Message    string `json:"message,omitempty"`   // Optional details
 }
 
 type FileStatusUpdatePayload struct {
-	ID        string `json:"id"`
-	RequestID string `json:"req_id"` // ID of the corresponding DataReq
-	Timestamp int64  `json:"ts"`     // Unix nanoseconds
-	NodeName  string `json:"node"`
-	UUID      string `json:"uuid"`    // UUID of the file being updated
-	Status    string `json:"status"`  // Status message (e.g. "DONE", "ERROR", "PROGRESS")
-	Message   string `json:"message"` // Optional human-readable message (e.g. progress percentage or error details)
+	ID         string `json:"id"`
+	TransferId string `json:"transfer_id"` // UUID for the overall file transfer, shared across all chunks, picked by the client. Will be used to prevent duplicate/conflicting transfers and for logging/tracing.
+	Timestamp  int64  `json:"ts"`          // Unix nanoseconds
+	NodeName   string `json:"node"`
+	UUID       string `json:"uuid"`    // UUID of the file being updated
+	Status     string `json:"status"`  // Status message (e.g. "DONE", "ERROR", "PROGRESS")
+	Message    string `json:"message"` // Optional human-readable message (e.g. progress percentage or error details)
 }
 
 // Handlers contains per-message callbacks used by HandleMessage.
@@ -120,6 +140,7 @@ type Handlers struct {
 	MetaPermsResp    func(MetaPermissionsRespPayload) error
 	DataReq          func(DataReqPayload) error
 	DataResp         func(DataRespPayload) error
+	DataRespAck      func(DataRespAckPayload) error
 	FileStatusUpdate func(FileStatusUpdatePayload) error
 }
 
@@ -234,6 +255,18 @@ func HandleMessage(msgType MessageType, body []byte, handlers Handlers) (any, er
 		}
 		if handlers.DataResp != nil {
 			if err := handlers.DataResp(payload); err != nil {
+				return nil, err
+			}
+		}
+		return payload, nil
+
+	case MsgDataRespAck:
+		payload, err := decodePayload[DataRespAckPayload](body, "data response ack")
+		if err != nil {
+			return nil, err
+		}
+		if handlers.DataRespAck != nil {
+			if err := handlers.DataRespAck(payload); err != nil {
 				return nil, err
 			}
 		}
