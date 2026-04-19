@@ -18,16 +18,17 @@ const (
 	MsgHeartbeatResp MessageType = 0x02
 
 	// Clients requests metadata from Servers
-	MsgMetaDataReq MessageType = 0x03
+	MsgMetaReq MessageType = 0x03
 	// Servers respond with the first n files they are waiting to serve
-	MsgMetaDataResp MessageType = 0x04
+	MsgMetaFileResp MessageType = 0x04
+	MsgMetaPermResp MessageType = 0x05 // Servers respond with the list of connectors the client has permission to request files from
 
 	// Clients request part of a file from Server
-	MsgDataReq MessageType = 0x05
+	MsgDataReq MessageType = 0x06
 	// Server responds with the requested file chunk, or an error if it cannot be served
-	MsgDataResp MessageType = 0x06
+	MsgDataResp MessageType = 0x07
 
-	MsgFileStatusUpdate MessageType = 0x07 // Server or Client updates the other about the status of a file (e.g. "DONE", "ERROR", "PROGRESS")
+	MsgFileStatusUpdate MessageType = 0x08 // Server or Client updates the other about the status of a file (e.g. "DONE", "ERROR", "PROGRESS")
 )
 
 // maxMessageSize caps incoming messages to protect against malformed frames.
@@ -41,31 +42,42 @@ type HeartbeatPayload struct {
 }
 
 // MetaDataReqPayload is the JSON body of a metadata request.
-type MetaDataReqPayload struct {
-	ID        string `json:"id"`
-	Timestamp int64  `json:"ts"` // Unix nanoseconds
-	NodeName  string `json:"node"`
+type MetaReqPayload struct {
+	ID               string `json:"id"`
+	Timestamp        int64  `json:"ts"` // Unix nanoseconds
+	NodeName         string `json:"node"`
+	RequestType      string `json:"request_type"`                // "FILES" or "PERMISSIONS"
+	RequestConnector string `json:"request_connector,omitempty"` // Optional connector name for FILES requests (e.g. "sftp", "local_disk")
 }
 
-type MetaDataAttribute struct {
+type MetaAttribute struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
 }
 
-type MetaDataEntry struct {
-	UUID          string              `json:"uuid"`
-	Name          string              `json:"name"`
-	Connector     string              `json:"connector"`
-	NumAttributes int                 `json:"num_attributes"`
-	Attributes    []MetaDataAttribute `json:"attributes"`
+type MetaEntry struct {
+	UUID          string          `json:"uuid"`
+	Name          string          `json:"name"`
+	Connector     string          `json:"connector"`
+	NumAttributes int             `json:"num_attributes"`
+	Attributes    []MetaAttribute `json:"attributes"`
 }
 
-type MetaDataRespPayload struct {
-	ID        string          `json:"id"`
-	RequestID string          `json:"req_id"` // ID of the corresponding MetaDataReq
-	Timestamp int64           `json:"ts"`     // Unix nanoseconds
-	NodeName  string          `json:"node"`
-	Files     []MetaDataEntry `json:"files"` // List of file paths the server is waiting to serve
+type MetaFilesRespPayload struct {
+	ID         string      `json:"id"`
+	RequestID  string      `json:"req_id"` // ID of the corresponding MetaDataReq
+	Timestamp  int64       `json:"ts"`     // Unix nanoseconds
+	NodeName   string      `json:"node"`
+	TotalFiles int         `json:"total_files"` // Total number of files the server is waiting to serve (may be more than the number included in this response)
+	Files      []MetaEntry `json:"files"`       // List of file paths the server is waiting to serve
+}
+
+type MetaPermissionsRespPayload struct {
+	ID                  string   `json:"id"`
+	RequestID           string   `json:"req_id"` // ID of the corresponding MetaDataReq
+	Timestamp           int64    `json:"ts"`     // Unix nanoseconds
+	NodeName            string   `json:"node"`
+	AvailableConnectors []string `json:"available_connectors"` // Connector names the client has permission to request files from (e.g. ["sftp", "local_disk"])
 }
 
 type DataReqPayload struct {
@@ -103,8 +115,9 @@ type FileStatusUpdatePayload struct {
 type Handlers struct {
 	HeartbeatReq     func(HeartbeatPayload) error
 	HeartbeatResp    func(HeartbeatPayload) error
-	MetaDataReq      func(MetaDataReqPayload) error
-	MetaDataResp     func(MetaDataRespPayload) error
+	MetaReq          func(MetaReqPayload) error
+	MetaFilesResp    func(MetaFilesRespPayload) error
+	MetaPermsResp    func(MetaPermissionsRespPayload) error
 	DataReq          func(DataReqPayload) error
 	DataResp         func(DataRespPayload) error
 	FileStatusUpdate func(FileStatusUpdatePayload) error
@@ -163,25 +176,37 @@ func HandleMessage(msgType MessageType, body []byte, handlers Handlers) (any, er
 		}
 		return payload, nil
 
-	case MsgMetaDataReq:
-		payload, err := decodePayload[MetaDataReqPayload](body, "metadata request")
+	case MsgMetaReq:
+		payload, err := decodePayload[MetaReqPayload](body, "metadata request")
 		if err != nil {
 			return nil, err
 		}
-		if handlers.MetaDataReq != nil {
-			if err := handlers.MetaDataReq(payload); err != nil {
+		if handlers.MetaReq != nil {
+			if err := handlers.MetaReq(payload); err != nil {
 				return nil, err
 			}
 		}
 		return payload, nil
 
-	case MsgMetaDataResp:
-		payload, err := decodePayload[MetaDataRespPayload](body, "metadata response")
+	case MsgMetaFileResp:
+		payload, err := decodePayload[MetaFilesRespPayload](body, "metadata response")
 		if err != nil {
 			return nil, err
 		}
-		if handlers.MetaDataResp != nil {
-			if err := handlers.MetaDataResp(payload); err != nil {
+		if handlers.MetaFilesResp != nil {
+			if err := handlers.MetaFilesResp(payload); err != nil {
+				return nil, err
+			}
+		}
+		return payload, nil
+
+	case MsgMetaPermResp:
+		payload, err := decodePayload[MetaPermissionsRespPayload](body, "metadata permissions response")
+		if err != nil {
+			return nil, err
+		}
+		if handlers.MetaPermsResp != nil {
+			if err := handlers.MetaPermsResp(payload); err != nil {
 				return nil, err
 			}
 		}
