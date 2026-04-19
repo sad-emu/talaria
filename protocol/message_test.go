@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -211,5 +213,198 @@ func TestWriteMessage_WireFormat(t *testing.T) {
 	declaredLen := binary.BigEndian.Uint32(wireBytes[1:5])
 	if int(declaredLen) != len(wireBytes)-5 {
 		t.Errorf("declared len %d != actual body len %d", declaredLen, len(wireBytes)-5)
+	}
+}
+
+// TestHandleMessage_NewMessageTypes tests all new message types.
+func TestHandleMessage_NewMessageTypes(t *testing.T) {
+	tests := []struct {
+		name     string
+		msgType  MessageType
+		payload  any
+		handlers func(*Handlers, func(any))
+	}{
+		{
+			name:    "metadata request",
+			msgType: MsgMetaDataReq,
+			payload: MetaDataReqPayload{
+				ID:        "meta-req-1",
+				Timestamp: 123,
+				NodeName:  "client-a",
+			},
+			handlers: func(h *Handlers, set func(any)) {
+				h.MetaDataReq = func(p MetaDataReqPayload) error {
+					set(p)
+					return nil
+				}
+			},
+		},
+		{
+			name:    "metadata response",
+			msgType: MsgMetaDataResp,
+			payload: MetaDataRespPayload{
+				ID:        "meta-resp-1",
+				RequestID: "meta-req-1",
+				Timestamp: 124,
+				NodeName:  "server-a",
+				Files: []MetaDataEntry{
+					{
+						UUID:          "file-1",
+						Name:          "example.dat",
+						Connector:     "outbound",
+						NumAttributes: 1,
+						Attributes: []MetaDataAttribute{
+							{Key: "content-type", Value: "application/octet-stream"},
+						},
+					},
+				},
+			},
+			handlers: func(h *Handlers, set func(any)) {
+				h.MetaDataResp = func(p MetaDataRespPayload) error {
+					set(p)
+					return nil
+				}
+			},
+		},
+		{
+			name:    "data request",
+			msgType: MsgDataReq,
+			payload: DataReqPayload{
+				ID:        "data-req-1",
+				RequestID: "meta-req-1",
+				Timestamp: 125,
+				NodeName:  "client-a",
+				UUID:      "file-1",
+				Offset:    1024,
+				Length:    4096,
+			},
+			handlers: func(h *Handlers, set func(any)) {
+				h.DataReq = func(p DataReqPayload) error {
+					set(p)
+					return nil
+				}
+			},
+		},
+		{
+			name:    "data response",
+			msgType: MsgDataResp,
+			payload: DataRespPayload{
+				ID:        "data-resp-1",
+				RequestID: "data-req-1",
+				Timestamp: 126,
+				NodeName:  "server-a",
+				UUID:      "file-1",
+				Offset:    1024,
+				Data:      []byte("chunk-data"),
+			},
+			handlers: func(h *Handlers, set func(any)) {
+				h.DataResp = func(p DataRespPayload) error {
+					set(p)
+					return nil
+				}
+			},
+		},
+		{
+			name:    "file status update",
+			msgType: MsgFileStatusUpdate,
+			payload: FileStatusUpdatePayload{
+				ID:        "status-1",
+				RequestID: "data-req-1",
+				Timestamp: 127,
+				NodeName:  "server-a",
+				UUID:      "file-1",
+				Status:    "PROGRESS",
+				Message:   "50%",
+			},
+			handlers: func(h *Handlers, set func(any)) {
+				h.FileStatusUpdate = func(p FileStatusUpdatePayload) error {
+					set(p)
+					return nil
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			defer server.Close()
+
+			writeErr := make(chan error, 1)
+			go func() {
+				writeErr <- WriteMessage(server, tt.msgType, tt.payload)
+			}()
+
+			msgType, body, err := ReadMessage(client)
+			if err != nil {
+				t.Fatalf("ReadMessage() error = %v", err)
+			}
+			if err := <-writeErr; err != nil {
+				t.Fatalf("WriteMessage() error = %v", err)
+			}
+			if msgType != tt.msgType {
+				t.Fatalf("ReadMessage() type = %v, want %v", msgType, tt.msgType)
+			}
+
+			var got any
+			handlers := Handlers{}
+			tt.handlers(&handlers, func(v any) { got = v })
+
+			if err := HandleMessage(msgType, body, handlers); err != nil {
+				t.Fatalf("HandleMessage() error = %v", err)
+			}
+			if !reflect.DeepEqual(got, tt.payload) {
+				t.Fatalf("decoded payload = %#v, want %#v", got, tt.payload)
+			}
+		})
+	}
+}
+
+func TestHandleMessage_UnsupportedType(t *testing.T) {
+	err := HandleMessage(MessageType(0xff), []byte(`{}`), Handlers{})
+	if err == nil {
+		t.Fatal("HandleMessage() error = nil, want non-nil")
+	}
+}
+
+func TestHandleMessage_InvalidJSON(t *testing.T) {
+	err := HandleMessage(MsgDataReq, []byte(`{"id":`), Handlers{})
+	if err == nil {
+		t.Fatal("HandleMessage() error = nil, want non-nil")
+	}
+}
+
+func TestHandleMessage_HandlerError(t *testing.T) {
+	wantErr := errors.New("handler failed")
+
+	err := HandleMessage(MsgFileStatusUpdate, []byte(`{
+		"id":"status-1",
+		"req_id":"data-req-1",
+		"ts":127,
+		"node":"server-a",
+		"uuid":"file-1",
+		"status":"ERROR",
+		"message":"disk full"
+	}`), Handlers{
+		FileStatusUpdate: func(FileStatusUpdatePayload) error {
+			return wantErr
+		},
+	})
+
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("HandleMessage() error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestHandleMessage_NilHandler(t *testing.T) {
+	// Ensure nil handlers don't panic.
+	err := HandleMessage(MsgMetaDataReq, []byte(`{
+		"id":"meta-req-1",
+		"ts":123,
+		"node":"client-a"
+	}`), Handlers{})
+	if err != nil {
+		t.Fatalf("HandleMessage() with nil handler error = %v, want nil", err)
 	}
 }
