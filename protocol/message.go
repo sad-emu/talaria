@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -84,7 +85,8 @@ type DataRespPayload struct {
 	NodeName  string `json:"node"`
 	UUID      string `json:"uuid"` // UUID of the file being served
 	Offset    int64  `json:"offset"`
-	Data      []byte `json:"data"` // File chunk data, or error message if serving failed
+	Data      []byte `json:"data"`      // File chunk data, or error message if serving failed
+	DataHash  string `json:"data_hash"` // Hex string of SHA256 hash of the data for integrity verification
 }
 
 type FileStatusUpdatePayload struct {
@@ -117,36 +119,115 @@ func NewHeartbeatReq(nodeName string) HeartbeatPayload {
 	}
 }
 
-func decodeAndHandle[T any](body []byte, name string, handler func(T) error) error {
+func decodePayload[T any](body []byte, name string) (T, error) {
 	var payload T
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return fmt.Errorf("protocol: decode %s payload: %w", name, err)
+		return payload, fmt.Errorf("protocol: decode %s payload: %w", name, err)
 	}
-	if handler == nil {
-		return nil
-	}
-	return handler(payload)
+	return payload, nil
 }
 
-// HandleMessage decodes a message body and dispatches it to the matching handler.
-func HandleMessage(msgType MessageType, body []byte, handlers Handlers) error {
+func validateDataResp(payload DataRespPayload) error {
+	sum := sha256.Sum256(payload.Data)
+	if payload.DataHash != fmt.Sprintf("%x", sum) {
+		return fmt.Errorf("protocol: data hash mismatch")
+	}
+	return nil
+}
+
+// HandleMessage decodes a message body, dispatches to the matching handler,
+// and returns the decoded payload for downstream scheduling logic.
+func HandleMessage(msgType MessageType, body []byte, handlers Handlers) (any, error) {
 	switch msgType {
 	case MsgHeartbeatReq:
-		return decodeAndHandle(body, "heartbeat request", handlers.HeartbeatReq)
+		payload, err := decodePayload[HeartbeatPayload](body, "heartbeat request")
+		if err != nil {
+			return nil, err
+		}
+		if handlers.HeartbeatReq != nil {
+			if err := handlers.HeartbeatReq(payload); err != nil {
+				return nil, err
+			}
+		}
+		return payload, nil
+
 	case MsgHeartbeatResp:
-		return decodeAndHandle(body, "heartbeat response", handlers.HeartbeatResp)
+		payload, err := decodePayload[HeartbeatPayload](body, "heartbeat response")
+		if err != nil {
+			return nil, err
+		}
+		if handlers.HeartbeatResp != nil {
+			if err := handlers.HeartbeatResp(payload); err != nil {
+				return nil, err
+			}
+		}
+		return payload, nil
+
 	case MsgMetaDataReq:
-		return decodeAndHandle(body, "metadata request", handlers.MetaDataReq)
+		payload, err := decodePayload[MetaDataReqPayload](body, "metadata request")
+		if err != nil {
+			return nil, err
+		}
+		if handlers.MetaDataReq != nil {
+			if err := handlers.MetaDataReq(payload); err != nil {
+				return nil, err
+			}
+		}
+		return payload, nil
+
 	case MsgMetaDataResp:
-		return decodeAndHandle(body, "metadata response", handlers.MetaDataResp)
+		payload, err := decodePayload[MetaDataRespPayload](body, "metadata response")
+		if err != nil {
+			return nil, err
+		}
+		if handlers.MetaDataResp != nil {
+			if err := handlers.MetaDataResp(payload); err != nil {
+				return nil, err
+			}
+		}
+		return payload, nil
+
 	case MsgDataReq:
-		return decodeAndHandle(body, "data request", handlers.DataReq)
+		payload, err := decodePayload[DataReqPayload](body, "data request")
+		if err != nil {
+			return nil, err
+		}
+		if handlers.DataReq != nil {
+			if err := handlers.DataReq(payload); err != nil {
+				return nil, err
+			}
+		}
+		return payload, nil
+
 	case MsgDataResp:
-		return decodeAndHandle(body, "data response", handlers.DataResp)
+		payload, err := decodePayload[DataRespPayload](body, "data response")
+		if err != nil {
+			return nil, err
+		}
+		if err := validateDataResp(payload); err != nil {
+			return nil, err
+		}
+		if handlers.DataResp != nil {
+			if err := handlers.DataResp(payload); err != nil {
+				return nil, err
+			}
+		}
+		return payload, nil
+
 	case MsgFileStatusUpdate:
-		return decodeAndHandle(body, "file status update", handlers.FileStatusUpdate)
+		payload, err := decodePayload[FileStatusUpdatePayload](body, "file status update")
+		if err != nil {
+			return nil, err
+		}
+		if handlers.FileStatusUpdate != nil {
+			if err := handlers.FileStatusUpdate(payload); err != nil {
+				return nil, err
+			}
+		}
+		return payload, nil
+
 	default:
-		return fmt.Errorf("protocol: unsupported message type 0x%02x", byte(msgType))
+		return nil, fmt.Errorf("protocol: unsupported message type 0x%02x", byte(msgType))
 	}
 }
 

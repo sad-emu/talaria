@@ -2,9 +2,11 @@ package protocol
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"reflect"
@@ -296,6 +298,7 @@ func TestHandleMessage_NewMessageTypes(t *testing.T) {
 				UUID:      "file-1",
 				Offset:    1024,
 				Data:      []byte("chunk-data"),
+				DataHash:  fmt.Sprintf("%x", sha256.Sum256([]byte("chunk-data"))), // SHA256 of "chunk-data"
 			},
 			handlers: func(h *Handlers, set func(any)) {
 				h.DataResp = func(p DataRespPayload) error {
@@ -351,7 +354,7 @@ func TestHandleMessage_NewMessageTypes(t *testing.T) {
 			handlers := Handlers{}
 			tt.handlers(&handlers, func(v any) { got = v })
 
-			if err := HandleMessage(msgType, body, handlers); err != nil {
+			if _, err := HandleMessage(msgType, body, handlers); err != nil {
 				t.Fatalf("HandleMessage() error = %v", err)
 			}
 			if !reflect.DeepEqual(got, tt.payload) {
@@ -362,14 +365,14 @@ func TestHandleMessage_NewMessageTypes(t *testing.T) {
 }
 
 func TestHandleMessage_UnsupportedType(t *testing.T) {
-	err := HandleMessage(MessageType(0xff), []byte(`{}`), Handlers{})
+	_, err := HandleMessage(MessageType(0xff), []byte(`{}`), Handlers{})
 	if err == nil {
 		t.Fatal("HandleMessage() error = nil, want non-nil")
 	}
 }
 
 func TestHandleMessage_InvalidJSON(t *testing.T) {
-	err := HandleMessage(MsgDataReq, []byte(`{"id":`), Handlers{})
+	_, err := HandleMessage(MsgDataReq, []byte(`{"id":`), Handlers{})
 	if err == nil {
 		t.Fatal("HandleMessage() error = nil, want non-nil")
 	}
@@ -378,7 +381,7 @@ func TestHandleMessage_InvalidJSON(t *testing.T) {
 func TestHandleMessage_HandlerError(t *testing.T) {
 	wantErr := errors.New("handler failed")
 
-	err := HandleMessage(MsgFileStatusUpdate, []byte(`{
+	_, err := HandleMessage(MsgFileStatusUpdate, []byte(`{
 		"id":"status-1",
 		"req_id":"data-req-1",
 		"ts":127,
@@ -399,7 +402,7 @@ func TestHandleMessage_HandlerError(t *testing.T) {
 
 func TestHandleMessage_NilHandler(t *testing.T) {
 	// Ensure nil handlers don't panic.
-	err := HandleMessage(MsgMetaDataReq, []byte(`{
+	_, err := HandleMessage(MsgMetaDataReq, []byte(`{
 		"id":"meta-req-1",
 		"ts":123,
 		"node":"client-a"
