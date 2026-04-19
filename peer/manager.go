@@ -1,66 +1,195 @@
 package peer
 
 import (
-	"crypto/tls"
+	"context"
 	"fmt"
-	"log"
 	"net"
+	"strings"
 	"sync"
 
-	"talaria/config"
+	"talaria/connector"
+	"talaria/protocol"
 )
 
-// Manager owns the listener and all outbound dialers for this node.
+type PeerContext struct {
+	DN string
+	IP net.IP
+}
+
 type Manager struct {
-	localName string
-
-	mu    sync.Mutex
+	mu    sync.RWMutex
 	conns map[*PeerConn]struct{}
+
+	name string
+
+	// Connector access policies (loaded from YAML dir or set directly).
+	Policies *connector.PolicySet
+
+	ResolveFileConnector func(ctx context.Context, fileUUID string) (string, error)
+
+	OnMetaReq func(ctx context.Context, peer PeerContext, p protocol.MetaReqPayload) error
+	OnDataReq func(ctx context.Context, peer PeerContext, p protocol.DataReqPayload) error
 }
 
-// NewManager creates a Manager for the given node name.
-func NewManager(localName string) *Manager {
+// NewManager requires an explicit manager name.
+func NewManager(name string) *Manager {
 	return &Manager{
-		localName: localName,
-		conns:     make(map[*PeerConn]struct{}),
+		conns: make(map[*PeerConn]struct{}),
+		name:  strings.TrimSpace(name),
 	}
 }
 
-// Start binds the listener and launches all outbound dialers.  It blocks until
-// the listener returns an error (which is fatal).
-func (m *Manager) Start(cfg *config.Config, serverTLS *tls.Config, clientTLS *tls.Config) error {
-	// Launch outbound dialers in background goroutines.
-	for _, p := range cfg.Peers {
-		d := newDialer(p, clientTLS, m.localName, m)
-		log.Printf("[%s] starting dialer for peer %s (%s)", m.localName, p.Name, net.JoinHostPort(p.Address, fmt.Sprintf("%d", p.Port)))
-		go d.Run()
-	}
-
-	// Start listener — blocks.
-	addr := fmt.Sprintf("%s:%d", cfg.Node.ListenAddress, cfg.Node.ListenPort)
-	ln := newListener(addr, serverTLS, m.localName, m)
-	return ln.Listen()
+func (m *Manager) Name() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.name
 }
 
-// register adds a connection to the active set.
+func (m *Manager) SetName(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.name = strings.TrimSpace(name)
+}
+
 func (m *Manager) register(pc *PeerConn) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.conns == nil {
+		m.conns = make(map[*PeerConn]struct{})
+	}
 	m.conns[pc] = struct{}{}
-	log.Printf("[%s] peer connected: %s (total active: %d)", m.localName, pc.RemoteAddr(), len(m.conns))
 }
 
-// unregister removes a connection from the active set.
 func (m *Manager) unregister(pc *PeerConn) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.conns, pc)
-	log.Printf("[%s] peer disconnected: %s (total active: %d)", m.localName, pc.RemoteAddr(), len(m.conns))
 }
 
-// ActiveCount returns the number of currently connected peers.
-func (m *Manager) ActiveCount() int {
+// SetPolicies replaces the runtime policy set.
+func (m *Manager) SetPolicies(ps *connector.PolicySet) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return len(m.conns)
+	m.Policies = ps
+}
+
+// LoadPoliciesFromDir loads per-connector YAML files and builds runtime policy set.
+func (m *Manager) LoadPoliciesFromDir(dir string) error {
+	cfgs, err := connector.LoadPoliciesFromDir(dir)
+	if err != nil {
+		return err
+	}
+	ps, err := connector.NewPolicySet(cfgs)
+	if err != nil {
+		return err
+	}
+	m.SetPolicies(ps)
+	return nil
+}
+
+// AllowedConnectors returns connector names this peer is currently authorized to request.
+func (m *Manager) AllowedConnectors(peer PeerContext) ([]string, error) {
+	m.mu.RLock()
+	ps := m.Policies
+	m.mu.RUnlock()
+
+	if ps == nil {
+		return nil, fmt.Errorf("manager: policies not configured")
+	}
+	return ps.AllowedConnectors(peer.DN, peer.IP), nil
+}
+
+// AuthorizeConnector checks whether a peer can access a connector.
+func (m *Manager) AuthorizeConnector(peer PeerContext, connectorName string) error {
+	m.mu.RLock()
+	ps := m.Policies
+	m.mu.RUnlock()
+
+	if ps == nil {
+		return fmt.Errorf("manager: policies not configured")
+	}
+
+	connectorName = strings.TrimSpace(connectorName)
+	if connectorName == "" {
+		return fmt.Errorf("manager: empty connector name")
+	}
+
+	dec := ps.Evaluate(connectorName, peer.DN, peer.IP)
+	if !dec.Allowed {
+		return fmt.Errorf("manager: connector %q denied: %s", connectorName, dec.Reason)
+	}
+	return nil
+}
+
+// ProcessIncoming assumes protocol framing/syntax validation is done in protocol.HandleMessage.
+// It applies semantic/authorization checks.
+func (m *Manager) ProcessIncoming(
+	ctx context.Context,
+	peer PeerContext,
+	msgType protocol.MessageType,
+	body []byte,
+) (any, error) {
+	decoded, err := protocol.HandleMessage(msgType, body, protocol.Handlers{})
+	if err != nil {
+		return nil, err
+	}
+
+	switch p := decoded.(type) {
+	case protocol.MetaReqPayload:
+		if err := m.handleMetaReq(ctx, peer, p); err != nil {
+			return nil, err
+		}
+	case protocol.DataReqPayload:
+		if err := m.handleDataReq(ctx, peer, p); err != nil {
+			return nil, err
+		}
+	}
+
+	return decoded, nil
+}
+
+func (m *Manager) handleMetaReq(ctx context.Context, peer PeerContext, p protocol.MetaReqPayload) error {
+	requestType := strings.ToUpper(strings.TrimSpace(p.RequestType))
+	requestConnector := strings.TrimSpace(p.RequestConnector)
+
+	switch requestType {
+	case "FILES":
+		// Optional for now: if specified, enforce connector access.
+		if requestConnector != "" {
+			if err := m.AuthorizeConnector(peer, requestConnector); err != nil {
+				return fmt.Errorf("manager: meta request denied: %w", err)
+			}
+		}
+	case "PERMISSIONS":
+		// No connector argument required.
+	default:
+		return fmt.Errorf("manager: invalid metadata request_type %q", p.RequestType)
+	}
+
+	if m.OnMetaReq != nil {
+		return m.OnMetaReq(ctx, peer, p)
+	}
+	return nil
+}
+
+func (m *Manager) handleDataReq(ctx context.Context, peer PeerContext, p protocol.DataReqPayload) error {
+	if m.ResolveFileConnector == nil {
+		return fmt.Errorf("manager: ResolveFileConnector not configured")
+	}
+	if strings.TrimSpace(p.UUID) == "" {
+		return fmt.Errorf("manager: data request missing file uuid")
+	}
+
+	connectorName, err := m.ResolveFileConnector(ctx, p.UUID)
+	if err != nil {
+		return fmt.Errorf("manager: resolve file connector for %q: %w", p.UUID, err)
+	}
+	if err := m.AuthorizeConnector(peer, connectorName); err != nil {
+		return fmt.Errorf("manager: data request denied: %w", err)
+	}
+
+	if m.OnDataReq != nil {
+		return m.OnDataReq(ctx, peer, p)
+	}
+	return nil
 }
