@@ -25,3 +25,26 @@ GlobalLog:
   MaxBackups: 5
   MaxAge: 28          # days
   Compress: false
+
+Hodos:
+  - Name: "local-to-s3-test"
+    Enabled: true
+    RunOnce: true
+    Pickup:
+      Type: "local"
+      Local:
+        Path: "./pickup"
+        Recurse: true
+        KeepFiles: true
+    Dropoff:
+      Type: "s3"
+      S3:
+        Bucket: "my-bucket"
+        KeyPrefix: "talaria-tests"
+        Region: "us-east-1"
+        Endpoint: ""
+        UsePathStyle: false
+        OverwriteExisting: false
+        AccessKeyID: "REPLACE_ME"
+        SecretAccessKey: "REPLACE_ME"
+        SessionToken: ""

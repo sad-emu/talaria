@@ -1,17 +1,21 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"os"
 
 	"talaria/config"
+	"talaria/hodos"
+	"talaria/utils"
 )
 
 const VERSION = "0.0.1"
 
 func main() {
 	cfgPath := flag.String("config", "talaria.yml", "path to YAML config file")
+	hodosOnly := flag.Bool("hodos-only", false, "run configured hodos flows and exit")
 	flag.Parse()
 
 	log.Printf("talaria version %s starting", VERSION)
@@ -24,6 +28,21 @@ func main() {
 			defer f.Close()
 		}
 		log.Fatalf("failed to load config: %v", err)
+	}
+
+	utils.SetupLogger(&cfg.GlobalLog)
+
+	if len(cfg.Hodos) > 0 {
+		count, herr := hodos.RunConfigured(context.Background(), cfg.Hodos)
+		if herr != nil {
+			log.Fatalf("hodos run failed: %v", herr)
+		}
+		log.Printf("hodos completed successfully, processed %d item(s)", count)
+	}
+
+	if *hodosOnly {
+		log.Printf("hodos-only mode enabled: exiting after hodos run")
+		return
 	}
 
 	node, err := NewNode(cfg)

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -10,10 +11,11 @@ import (
 
 // Config is the top-level application configuration.
 type Config struct {
-	Node      NodeConfig   `yaml:"Node"`
-	TLS       TLSConfig    `yaml:"TLS"`
-	Peers     []PeerConfig `yaml:"Peers"`
-	GlobalLog LogConfig    `yaml:"GlobalLog"`
+	Node      NodeConfig    `yaml:"Node"`
+	TLS       TLSConfig     `yaml:"TLS"`
+	Peers     []PeerConfig  `yaml:"Peers"`
+	Hodos     []HodosConfig `yaml:"Hodos"`
+	GlobalLog LogConfig     `yaml:"GlobalLog"`
 }
 
 // NodeConfig holds the identity and listen address of this instance.
@@ -89,6 +91,52 @@ func validate(cfg *Config) error {
 		}
 		if p.HeartbeatInterval <= 0 {
 			cfg.Peers[i].HeartbeatInterval = 30 * time.Second
+		}
+	}
+	for i, h := range cfg.Hodos {
+		if strings.TrimSpace(h.Name) == "" {
+			return fmt.Errorf("Hodos[%d].Name is required", i)
+		}
+
+		pickupType := normalizeEndpointType(h.Pickup.Type)
+		dropoffType := normalizeEndpointType(h.Dropoff.Type)
+
+		switch pickupType {
+		case "local":
+			if h.Pickup.Local == nil || strings.TrimSpace(h.Pickup.Local.Path) == "" {
+				return fmt.Errorf("Hodos[%d].Pickup.Local.Path is required for local pickup", i)
+			}
+		case "talaria":
+			// Placeholder for upcoming talaria pickup mode.
+		default:
+			return fmt.Errorf("Hodos[%d].Pickup.Type %q is not supported", i, h.Pickup.Type)
+		}
+
+		switch dropoffType {
+		case "s3":
+			if h.Dropoff.S3 == nil {
+				return fmt.Errorf("Hodos[%d].Dropoff.S3 is required for s3 dropoff", i)
+			}
+			s3cfg := h.Dropoff.S3
+			if strings.TrimSpace(s3cfg.Bucket) == "" {
+				return fmt.Errorf("Hodos[%d].Dropoff.S3.Bucket is required", i)
+			}
+			if strings.TrimSpace(s3cfg.ObjectKey) == "" && strings.TrimSpace(s3cfg.KeyPrefix) == "" {
+				return fmt.Errorf("Hodos[%d].Dropoff.S3.ObjectKey or KeyPrefix is required", i)
+			}
+			if strings.TrimSpace(s3cfg.Region) == "" {
+				return fmt.Errorf("Hodos[%d].Dropoff.S3.Region is required", i)
+			}
+			if strings.TrimSpace(s3cfg.AccessKeyID) == "" {
+				return fmt.Errorf("Hodos[%d].Dropoff.S3.AccessKeyID is required", i)
+			}
+			if strings.TrimSpace(s3cfg.SecretAccessKey) == "" {
+				return fmt.Errorf("Hodos[%d].Dropoff.S3.SecretAccessKey is required", i)
+			}
+		case "talaria":
+			// Placeholder for upcoming talaria dropoff mode.
+		default:
+			return fmt.Errorf("Hodos[%d].Dropoff.Type %q is not supported", i, h.Dropoff.Type)
 		}
 	}
 	return nil
