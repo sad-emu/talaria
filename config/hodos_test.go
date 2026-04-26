@@ -39,6 +39,12 @@ Hodos:
 	if !h.RunOnceValue() {
 		t.Fatalf("RunOnceValue() should default to true")
 	}
+	if cfg.Persistence.Backend != "sqlite" {
+		t.Fatalf("Persistence.Backend = %q, want sqlite", cfg.Persistence.Backend)
+	}
+	if cfg.Persistence.SQLitePath != "talaria.db" {
+		t.Fatalf("Persistence.SQLitePath = %q, want talaria.db", cfg.Persistence.SQLitePath)
+	}
 }
 
 func TestValidate_HodosUnsupportedTypes(t *testing.T) {

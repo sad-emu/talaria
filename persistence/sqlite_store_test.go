@@ -247,3 +247,57 @@ func TestSQLiteStore_DeleteClaim_NonExistent(t *testing.T) {
 		t.Fatalf("DeleteClaim() nonexistent error = %v", err)
 	}
 }
+
+func TestSQLiteStore_HodosProgress_UpsertGetDelete(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UnixNano()
+
+	rec := HodosProgress{
+		HodosName:         "local-to-s3",
+		ItemKey:           "/tmp/input/a.txt",
+		SinkKey:           "uploads/a.txt",
+		Status:            "completed",
+		Message:           "ok",
+		UpdatedUnixNano:   now,
+		CompletedUnixNano: now,
+	}
+	if err := store.UpsertHodosProgress(ctx, rec); err != nil {
+		t.Fatalf("UpsertHodosProgress() error = %v", err)
+	}
+
+	got, err := store.GetHodosProgress(ctx, rec.HodosName, rec.ItemKey)
+	if err != nil {
+		t.Fatalf("GetHodosProgress() error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetHodosProgress() returned nil")
+	}
+	if got.Status != "completed" || got.SinkKey != rec.SinkKey {
+		t.Fatalf("GetHodosProgress() = %+v, want status=completed sink=%q", got, rec.SinkKey)
+	}
+
+	rec.Status = "in_progress"
+	rec.CompletedUnixNano = 0
+	if err := store.UpsertHodosProgress(ctx, rec); err != nil {
+		t.Fatalf("UpsertHodosProgress() update error = %v", err)
+	}
+	got, err = store.GetHodosProgress(ctx, rec.HodosName, rec.ItemKey)
+	if err != nil {
+		t.Fatalf("GetHodosProgress() update error = %v", err)
+	}
+	if got.Status != "in_progress" {
+		t.Fatalf("updated status = %q, want in_progress", got.Status)
+	}
+
+	if err := store.DeleteHodosProgress(ctx, rec.HodosName, rec.ItemKey); err != nil {
+		t.Fatalf("DeleteHodosProgress() error = %v", err)
+	}
+	got, err = store.GetHodosProgress(ctx, rec.HodosName, rec.ItemKey)
+	if err != nil {
+		t.Fatalf("GetHodosProgress() after delete error = %v", err)
+	}
+	if got != nil {
+		t.Fatal("expected deleted Hodos progress to be nil")
+	}
+}

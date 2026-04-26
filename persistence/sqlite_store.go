@@ -63,6 +63,19 @@ CREATE TABLE IF NOT EXISTS chunk_acks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunk_acks_transfer ON chunk_acks(transfer_id);
+
+CREATE TABLE IF NOT EXISTS hodos_progress (
+	hodos_name TEXT NOT NULL,
+	item_key TEXT NOT NULL,
+	sink_key TEXT NOT NULL,
+	status TEXT NOT NULL,
+	message TEXT NOT NULL,
+	updated_ns INTEGER NOT NULL,
+	completed_ns INTEGER NOT NULL,
+	PRIMARY KEY (hodos_name, item_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hodos_progress_status ON hodos_progress(hodos_name, status);
 `
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("persistence: init schema: %w", err)
@@ -162,6 +175,55 @@ func (s *SQLiteTransferStore) DeleteClaim(ctx context.Context, transferID string
 	_, err := s.db.ExecContext(ctx, q, transferID)
 	if err != nil {
 		return fmt.Errorf("persistence: delete claim: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteTransferStore) UpsertHodosProgress(ctx context.Context, p HodosProgress) error {
+	const q = `
+INSERT INTO hodos_progress (
+  hodos_name, item_key, sink_key, status, message, updated_ns, completed_ns
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(hodos_name, item_key) DO UPDATE SET
+  sink_key=excluded.sink_key,
+  status=excluded.status,
+  message=excluded.message,
+  updated_ns=excluded.updated_ns,
+  completed_ns=excluded.completed_ns;
+`
+	_, err := s.db.ExecContext(ctx, q,
+		p.HodosName, p.ItemKey, p.SinkKey, p.Status, p.Message, p.UpdatedUnixNano, p.CompletedUnixNano,
+	)
+	if err != nil {
+		return fmt.Errorf("persistence: upsert hodos progress: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteTransferStore) GetHodosProgress(ctx context.Context, hodosName string, itemKey string) (*HodosProgress, error) {
+	const q = `
+SELECT hodos_name, item_key, sink_key, status, message, updated_ns, completed_ns
+FROM hodos_progress
+WHERE hodos_name = ? AND item_key = ?;
+`
+	var p HodosProgress
+	err := s.db.QueryRowContext(ctx, q, hodosName, itemKey).Scan(
+		&p.HodosName, &p.ItemKey, &p.SinkKey, &p.Status, &p.Message, &p.UpdatedUnixNano, &p.CompletedUnixNano,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("persistence: get hodos progress: %w", err)
+	}
+	return &p, nil
+}
+
+func (s *SQLiteTransferStore) DeleteHodosProgress(ctx context.Context, hodosName string, itemKey string) error {
+	const q = `DELETE FROM hodos_progress WHERE hodos_name = ? AND item_key = ?;`
+	_, err := s.db.ExecContext(ctx, q, hodosName, itemKey)
+	if err != nil {
+		return fmt.Errorf("persistence: delete hodos progress: %w", err)
 	}
 	return nil
 }

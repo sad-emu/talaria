@@ -45,6 +45,16 @@ type ChunkAck struct {
 	TimestampUnixNano int64
 }
 
+type HodosProgress struct {
+	HodosName         string
+	ItemKey           string
+	SinkKey           string
+	Status            string
+	Message           string
+	UpdatedUnixNano   int64
+	CompletedUnixNano int64
+}
+
 type TransferStore interface {
 	UpsertClaim(ctx context.Context, c TransferClaim) error
 	GetClaimByTransferID(ctx context.Context, transferID string) (*TransferClaim, error)
@@ -52,6 +62,9 @@ type TransferStore interface {
 	InsertChunkAck(ctx context.Context, a ChunkAck) error
 	ExpireClaimsBefore(ctx context.Context, cutoffUnixNano int64) (int64, error)
 	DeleteClaim(ctx context.Context, transferID string) error
+	UpsertHodosProgress(ctx context.Context, p HodosProgress) error
+	GetHodosProgress(ctx context.Context, hodosName string, itemKey string) (*HodosProgress, error)
+	DeleteHodosProgress(ctx context.Context, hodosName string, itemKey string) error
 	Close() error
 }
 

@@ -11,11 +11,12 @@ import (
 
 // Config is the top-level application configuration.
 type Config struct {
-	Node      NodeConfig    `yaml:"Node"`
-	TLS       TLSConfig     `yaml:"TLS"`
-	Peers     []PeerConfig  `yaml:"Peers"`
-	Hodos     []HodosConfig `yaml:"Hodos"`
-	GlobalLog LogConfig     `yaml:"GlobalLog"`
+	Node        NodeConfig        `yaml:"Node"`
+	TLS         TLSConfig         `yaml:"TLS"`
+	Peers       []PeerConfig      `yaml:"Peers"`
+	Hodos       []HodosConfig     `yaml:"Hodos"`
+	Persistence PersistenceConfig `yaml:"Persistence"`
+	GlobalLog   LogConfig         `yaml:"GlobalLog"`
 }
 
 // NodeConfig holds the identity and listen address of this instance.
@@ -137,6 +138,14 @@ func validate(cfg *Config) error {
 			// Placeholder for upcoming talaria dropoff mode.
 		default:
 			return fmt.Errorf("Hodos[%d].Dropoff.Type %q is not supported", i, h.Dropoff.Type)
+		}
+	}
+	if len(cfg.Hodos) > 0 {
+		if strings.TrimSpace(cfg.Persistence.Backend) == "" {
+			cfg.Persistence.Backend = "sqlite"
+		}
+		if strings.EqualFold(strings.TrimSpace(cfg.Persistence.Backend), "sqlite") && strings.TrimSpace(cfg.Persistence.SQLitePath) == "" {
+			cfg.Persistence.SQLitePath = "talaria.db"
 		}
 	}
 	return nil

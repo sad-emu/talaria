@@ -8,6 +8,7 @@ import (
 
 	"talaria/config"
 	"talaria/hodos"
+	"talaria/persistence"
 	"talaria/utils"
 )
 
@@ -33,7 +34,16 @@ func main() {
 	utils.SetupLogger(&cfg.GlobalLog)
 
 	if len(cfg.Hodos) > 0 {
-		count, herr := hodos.RunConfigured(context.Background(), cfg.Hodos)
+		store, err := persistence.OpenTransferStore(context.Background(), persistence.Config{
+			Backend:    persistence.Backend(cfg.Persistence.Backend),
+			SQLitePath: cfg.Persistence.SQLitePath,
+		})
+		if err != nil {
+			log.Fatalf("open persistence store failed: %v", err)
+		}
+		defer store.Close()
+
+		count, herr := hodos.RunConfigured(context.Background(), cfg.Hodos, store)
 		if herr != nil {
 			log.Fatalf("hodos run failed: %v", herr)
 		}
