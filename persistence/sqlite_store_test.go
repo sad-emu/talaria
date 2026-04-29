@@ -301,3 +301,67 @@ func TestSQLiteStore_HodosProgress_UpsertGetDelete(t *testing.T) {
 		t.Fatal("expected deleted Hodos progress to be nil")
 	}
 }
+
+func TestSQLiteStore_ListHodosProgress(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	records := []HodosProgress{
+		{HodosName: "flow-a", ItemKey: "/tmp/in/a.txt", SinkKey: "uploads/a.txt", Status: "completed", UpdatedUnixNano: 20, CompletedUnixNano: 20},
+		{HodosName: "flow-a", ItemKey: "/tmp/in/b.txt", SinkKey: "uploads/b.txt", Status: "in_progress", UpdatedUnixNano: 30},
+		{HodosName: "flow-b", ItemKey: "/tmp/in/c.txt", SinkKey: "uploads/c.txt", Status: "failed", UpdatedUnixNano: 10},
+	}
+	for _, rec := range records {
+		if err := store.UpsertHodosProgress(ctx, rec); err != nil {
+			t.Fatalf("UpsertHodosProgress() error = %v", err)
+		}
+	}
+
+	list, err := store.ListHodosProgress(ctx, "flow-a", 10, 0)
+	if err != nil {
+		t.Fatalf("ListHodosProgress() error = %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("len(list) = %d, want 2", len(list))
+	}
+	if list[0].ItemKey != "/tmp/in/b.txt" {
+		t.Fatalf("first item key = %q, want /tmp/in/b.txt", list[0].ItemKey)
+	}
+	if list[1].ItemKey != "/tmp/in/a.txt" {
+		t.Fatalf("second item key = %q, want /tmp/in/a.txt", list[1].ItemKey)
+	}
+}
+
+func TestSQLiteStore_ListHodosProgressSummaries(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	rows := []HodosProgress{
+		{HodosName: "flow-a", ItemKey: "a", SinkKey: "sa", Status: "completed", UpdatedUnixNano: 10, CompletedUnixNano: 10},
+		{HodosName: "flow-a", ItemKey: "b", SinkKey: "sb", Status: "in_progress", UpdatedUnixNano: 20},
+		{HodosName: "flow-a", ItemKey: "c", SinkKey: "sc", Status: "failed", UpdatedUnixNano: 30},
+		{HodosName: "flow-b", ItemKey: "d", SinkKey: "sd", Status: "completed", UpdatedUnixNano: 15, CompletedUnixNano: 15},
+	}
+	for _, rec := range rows {
+		if err := store.UpsertHodosProgress(ctx, rec); err != nil {
+			t.Fatalf("UpsertHodosProgress() error = %v", err)
+		}
+	}
+
+	summaries, err := store.ListHodosProgressSummaries(ctx)
+	if err != nil {
+		t.Fatalf("ListHodosProgressSummaries() error = %v", err)
+	}
+	if len(summaries) != 2 {
+		t.Fatalf("len(summaries) = %d, want 2", len(summaries))
+	}
+	if summaries[0].HodosName != "flow-a" {
+		t.Fatalf("first summary hodos = %q, want flow-a", summaries[0].HodosName)
+	}
+	if summaries[0].Total != 3 || summaries[0].InProgress != 1 || summaries[0].Completed != 1 || summaries[0].Failed != 1 {
+		t.Fatalf("flow-a summary = %+v, want total=3 in_progress=1 completed=1 failed=1", summaries[0])
+	}
+	if summaries[0].LastUpdatedUnixNs != 30 {
+		t.Fatalf("flow-a LastUpdatedUnixNs = %d, want 30", summaries[0].LastUpdatedUnixNs)
+	}
+}

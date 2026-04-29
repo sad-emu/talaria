@@ -55,6 +55,15 @@ type HodosProgress struct {
 	CompletedUnixNano int64
 }
 
+type HodosProgressSummary struct {
+	HodosName         string
+	Total             int64
+	InProgress        int64
+	Completed         int64
+	Failed            int64
+	LastUpdatedUnixNs int64
+}
+
 type TransferStore interface {
 	UpsertClaim(ctx context.Context, c TransferClaim) error
 	GetClaimByTransferID(ctx context.Context, transferID string) (*TransferClaim, error)
@@ -64,6 +73,8 @@ type TransferStore interface {
 	DeleteClaim(ctx context.Context, transferID string) error
 	UpsertHodosProgress(ctx context.Context, p HodosProgress) error
 	GetHodosProgress(ctx context.Context, hodosName string, itemKey string) (*HodosProgress, error)
+	ListHodosProgress(ctx context.Context, hodosName string, limit int, offset int) ([]HodosProgress, error)
+	ListHodosProgressSummaries(ctx context.Context) ([]HodosProgressSummary, error)
 	DeleteHodosProgress(ctx context.Context, hodosName string, itemKey string) error
 	Close() error
 }

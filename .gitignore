@@ -5,12 +5,14 @@ talaria
 # Config with secrets (keep example)
 talaria.yml
 !talaria.example.yml
+talaria.db
 
 # Certs
 *.pem
 *.crt
 *.key
 *.p12
+*.srl
 
 # Logs
 *.log

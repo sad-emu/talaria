@@ -219,6 +219,91 @@ WHERE hodos_name = ? AND item_key = ?;
 	return &p, nil
 }
 
+func (s *SQLiteTransferStore) ListHodosProgress(ctx context.Context, hodosName string, limit int, offset int) ([]HodosProgress, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	const q = `
+SELECT hodos_name, item_key, sink_key, status, message, updated_ns, completed_ns
+FROM hodos_progress
+WHERE hodos_name = ?
+ORDER BY updated_ns DESC, item_key ASC
+LIMIT ? OFFSET ?;
+`
+	rows, err := s.db.QueryContext(ctx, q, hodosName, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("persistence: list hodos progress: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]HodosProgress, 0, limit)
+	for rows.Next() {
+		var p HodosProgress
+		if err := rows.Scan(
+			&p.HodosName,
+			&p.ItemKey,
+			&p.SinkKey,
+			&p.Status,
+			&p.Message,
+			&p.UpdatedUnixNano,
+			&p.CompletedUnixNano,
+		); err != nil {
+			return nil, fmt.Errorf("persistence: list hodos progress scan: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("persistence: list hodos progress rows: %w", err)
+	}
+
+	return out, nil
+}
+
+func (s *SQLiteTransferStore) ListHodosProgressSummaries(ctx context.Context) ([]HodosProgressSummary, error) {
+	const q = `
+SELECT
+	hodos_name,
+	COUNT(*) AS total,
+	SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress,
+	SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+	SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+	MAX(updated_ns) AS last_updated_ns
+FROM hodos_progress
+GROUP BY hodos_name
+ORDER BY hodos_name ASC;
+`
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("persistence: list hodos progress summaries: %w", err)
+	}
+	defer rows.Close()
+
+	out := []HodosProgressSummary{}
+	for rows.Next() {
+		var s HodosProgressSummary
+		if err := rows.Scan(
+			&s.HodosName,
+			&s.Total,
+			&s.InProgress,
+			&s.Completed,
+			&s.Failed,
+			&s.LastUpdatedUnixNs,
+		); err != nil {
+			return nil, fmt.Errorf("persistence: list hodos progress summaries scan: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("persistence: list hodos progress summaries rows: %w", err)
+	}
+
+	return out, nil
+}
+
 func (s *SQLiteTransferStore) DeleteHodosProgress(ctx context.Context, hodosName string, itemKey string) error {
 	const q = `DELETE FROM hodos_progress WHERE hodos_name = ? AND item_key = ?;`
 	_, err := s.db.ExecContext(ctx, q, hodosName, itemKey)

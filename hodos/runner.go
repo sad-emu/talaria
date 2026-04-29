@@ -3,6 +3,7 @@ package hodos
 import (
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,7 +21,7 @@ type keyWriter interface {
 }
 
 type runner struct {
-	cfg config.HodosConfig
+	cfg   config.HodosConfig
 	store persistence.TransferStore
 
 	source    connector.Source
@@ -30,6 +31,10 @@ type runner struct {
 	sinkType string
 	s3Sink   keyWriter
 	s3Prefix string
+
+	processedCount int64
+	skippedCount   int64
+	failedCount    int64
 }
 
 // RunConfigured executes configured hodos flows.
@@ -132,18 +137,28 @@ func (r *runner) runOnce(ctx context.Context) (int, error) {
 			return count, err
 		}
 		if skipped {
+			r.skippedCount++
+			r.logProgress("skipped", handle, "already completed")
 			continue
 		}
 		if err := r.write(ctx, handle, data); err != nil {
+			r.failedCount++
+			_ = r.markFailed(ctx, handle, fmt.Sprintf("write failed: %v", err))
+			r.logProgress("failed", handle, err.Error())
 			return count, err
 		}
 		if err := r.markCompleted(ctx, handle); err != nil {
 			return count, err
 		}
 		if err := r.source.Ack(ctx, handle); err != nil {
+			r.failedCount++
+			_ = r.markFailed(ctx, handle, fmt.Sprintf("ack failed: %v", err))
+			r.logProgress("failed", handle, err.Error())
 			return count, err
 		}
 		count++
+		r.processedCount++
+		r.logProgress("completed", handle, "")
 	}
 }
 
@@ -162,18 +177,28 @@ func (r *runner) runContinuous(ctx context.Context) (int, error) {
 			return count, err
 		}
 		if skipped {
+			r.skippedCount++
+			r.logProgress("skipped", handle, "already completed")
 			continue
 		}
 		if err := r.write(ctx, handle, data); err != nil {
+			r.failedCount++
+			_ = r.markFailed(ctx, handle, fmt.Sprintf("write failed: %v", err))
+			r.logProgress("failed", handle, err.Error())
 			return count, err
 		}
 		if err := r.markCompleted(ctx, handle); err != nil {
 			return count, err
 		}
 		if err := r.source.Ack(ctx, handle); err != nil {
+			r.failedCount++
+			_ = r.markFailed(ctx, handle, fmt.Sprintf("ack failed: %v", err))
+			r.logProgress("failed", handle, err.Error())
 			return count, err
 		}
 		count++
+		r.processedCount++
+		r.logProgress("completed", handle, "")
 	}
 }
 
@@ -252,9 +277,45 @@ func (r *runner) markCompleted(ctx context.Context, handle any) error {
 		ItemKey:           itemKey,
 		SinkKey:           sinkKey,
 		Status:            "completed",
+		Message:           "",
 		UpdatedUnixNano:   now,
 		CompletedUnixNano: now,
 	})
+}
+
+func (r *runner) markFailed(ctx context.Context, handle any, message string) error {
+	if r.store == nil {
+		return nil
+	}
+	itemKey := r.itemKey(handle)
+	if itemKey == "" {
+		return nil
+	}
+	sinkKey := strings.TrimSpace(r.cfg.Dropoff.S3.ObjectKey)
+	if sinkKey == "" {
+		sinkKey = buildS3Key(r.sourceDir, itemKey, r.s3Prefix)
+	}
+	now := time.Now().UnixNano()
+	return r.store.UpsertHodosProgress(ctx, persistence.HodosProgress{
+		HodosName:       r.cfg.Name,
+		ItemKey:         itemKey,
+		SinkKey:         sinkKey,
+		Status:          "failed",
+		Message:         strings.TrimSpace(message),
+		UpdatedUnixNano: now,
+	})
+}
+
+func (r *runner) logProgress(status string, handle any, message string) {
+	itemKey := r.itemKey(handle)
+	if itemKey == "" {
+		itemKey = "unknown"
+	}
+	if strings.TrimSpace(message) == "" {
+		log.Printf("hodos progress name=%q status=%s item=%q processed=%d skipped=%d failed=%d", r.cfg.Name, status, itemKey, r.processedCount, r.skippedCount, r.failedCount)
+		return
+	}
+	log.Printf("hodos progress name=%q status=%s item=%q message=%q processed=%d skipped=%d failed=%d", r.cfg.Name, status, itemKey, message, r.processedCount, r.skippedCount, r.failedCount)
 }
 
 func (r *runner) itemKey(handle any) string {

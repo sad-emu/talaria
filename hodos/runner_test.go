@@ -30,7 +30,7 @@ func TestBuildS3Key_PathOutsideSourceFallsBackToBase(t *testing.T) {
 }
 
 type fakeSource struct {
-	reads  []struct {
+	reads []struct {
 		data   []byte
 		handle any
 	}
@@ -49,14 +49,18 @@ func (f *fakeSource) Read(ctx context.Context) ([]byte, any, error) {
 	return r.data, r.handle, nil
 }
 func (f *fakeSource) Ack(context.Context, any) error { f.ackCnt++; return nil }
-func (f *fakeSource) Close() error                  { return nil }
+func (f *fakeSource) Close() error                   { return nil }
 
 type fakeKeyWriter struct {
 	keys []string
 	data [][]byte
+	err  error
 }
 
 func (f *fakeKeyWriter) WriteToKey(_ context.Context, key string, data []byte) error {
+	if f.err != nil {
+		return f.err
+	}
 	f.keys = append(f.keys, key)
 	f.data = append(f.data, append([]byte(nil), data...))
 	return nil
@@ -76,10 +80,10 @@ func (f *fakeStore) GetClaimByTransferID(context.Context, string) (*persistence.
 	return nil, nil
 }
 func (f *fakeStore) UpdateProgress(context.Context, string, int64, int64) error { return nil }
-func (f *fakeStore) InsertChunkAck(context.Context, persistence.ChunkAck) error  { return nil }
-func (f *fakeStore) ExpireClaimsBefore(context.Context, int64) (int64, error)    { return 0, nil }
-func (f *fakeStore) DeleteClaim(context.Context, string) error                    { return nil }
-func (f *fakeStore) Close() error                                                 { return nil }
+func (f *fakeStore) InsertChunkAck(context.Context, persistence.ChunkAck) error { return nil }
+func (f *fakeStore) ExpireClaimsBefore(context.Context, int64) (int64, error)   { return 0, nil }
+func (f *fakeStore) DeleteClaim(context.Context, string) error                  { return nil }
+func (f *fakeStore) Close() error                                               { return nil }
 func (f *fakeStore) UpsertHodosProgress(_ context.Context, p persistence.HodosProgress) error {
 	f.records[p.HodosName+"|"+p.ItemKey] = p
 	return nil
@@ -91,6 +95,28 @@ func (f *fakeStore) GetHodosProgress(_ context.Context, hodosName string, itemKe
 	}
 	cp := p
 	return &cp, nil
+}
+func (f *fakeStore) ListHodosProgress(_ context.Context, hodosName string, limit int, offset int) ([]persistence.HodosProgress, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	out := make([]persistence.HodosProgress, 0, limit)
+	for _, p := range f.records {
+		if p.HodosName == hodosName {
+			out = append(out, p)
+		}
+	}
+	if offset >= len(out) {
+		return []persistence.HodosProgress{}, nil
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[offset:end], nil
+}
+func (f *fakeStore) ListHodosProgressSummaries(_ context.Context) ([]persistence.HodosProgressSummary, error) {
+	return []persistence.HodosProgressSummary{}, nil
 }
 func (f *fakeStore) DeleteHodosProgress(_ context.Context, hodosName string, itemKey string) error {
 	delete(f.records, hodosName+"|"+itemKey)
@@ -107,7 +133,7 @@ func TestRunner_StoresCompletedProgress(t *testing.T) {
 
 	r := &runner{
 		cfg: config.HodosConfig{
-			Name: "flow-a",
+			Name:    "flow-a",
 			Dropoff: config.HodosEndpointConfig{S3: &config.HodosS3Config{KeyPrefix: "uploads"}},
 		},
 		store:     store,
@@ -156,7 +182,7 @@ func TestRunner_SkipsCompletedAfterRestart(t *testing.T) {
 
 	r := &runner{
 		cfg: config.HodosConfig{
-			Name: "flow-a",
+			Name:    "flow-a",
 			Dropoff: config.HodosEndpointConfig{S3: &config.HodosS3Config{KeyPrefix: "uploads"}},
 		},
 		store:     store,
@@ -178,5 +204,44 @@ func TestRunner_SkipsCompletedAfterRestart(t *testing.T) {
 	}
 	if len(sink.keys) != 0 {
 		t.Fatalf("sink should not be invoked, got keys %#v", sink.keys)
+	}
+}
+
+func TestRunner_StoresFailedProgressOnWriteError(t *testing.T) {
+	store := newFakeStore()
+	source := &fakeSource{reads: []struct {
+		data   []byte
+		handle any
+	}{{data: []byte("payload"), handle: "/tmp/in/a.txt"}}}
+	sink := &fakeKeyWriter{err: context.DeadlineExceeded}
+
+	r := &runner{
+		cfg: config.HodosConfig{
+			Name:    "flow-a",
+			Dropoff: config.HodosEndpointConfig{S3: &config.HodosS3Config{KeyPrefix: "uploads"}},
+		},
+		store:     store,
+		source:    source,
+		sourceDir: "/tmp/in",
+		sinkType:  "s3",
+		s3Sink:    sink,
+		s3Prefix:  "uploads",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := r.runOnce(ctx)
+	if err == nil {
+		t.Fatalf("expected runOnce() error")
+	}
+	p, err := store.GetHodosProgress(context.Background(), "flow-a", "/tmp/in/a.txt")
+	if err != nil || p == nil {
+		t.Fatalf("expected stored failure progress, err=%v progress=%v", err, p)
+	}
+	if p.Status != "failed" {
+		t.Fatalf("status = %q, want failed", p.Status)
+	}
+	if p.Message == "" {
+		t.Fatalf("failed progress message should not be empty")
 	}
 }
