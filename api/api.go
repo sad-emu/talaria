@@ -7,11 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 
 	"talaria/persistence"
+	"talaria/utils"
 )
 
 type hodosProgressReader interface {
@@ -64,7 +64,7 @@ func (s *Server) StartBackground() error {
 	}
 	go func() {
 		if err := s.Serve(ln); err != nil && err != http.ErrServerClosed {
-			log.Printf("API server stopped: %v", err)
+			utils.Errorf("API server stopped: %v", err)
 		}
 	}()
 	return nil
@@ -86,7 +86,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	s.httpServer = &http.Server{
 		Handler: s.mux,
 	}
-	log.Printf("API server listening on %s", s.listenAddr)
+	utils.Infof("API server listening on %s", s.listenAddr)
 	err := s.httpServer.Serve(ln)
 	if err != nil {
 		return fmt.Errorf("api: %w", err)

@@ -1,8 +1,6 @@
 package main
 
 import (
-	"log"
-
 	"talaria/config"
 	"talaria/peer"
 	talariaTLS "talaria/tls"
@@ -27,7 +25,7 @@ func NewNode(cfg *config.Config) (*Node, error) {
 // peer manager (which blocks until the listener fails).
 func (n *Node) Start() error {
 	utils.SetupLogger(&n.cfg.GlobalLog)
-	log.Printf("[%s] talaria starting", n.cfg.Node.Name)
+	utils.Infof("[%s] talaria starting", n.cfg.Node.Name)
 
 	serverTLS, err := talariaTLS.BuildServerTLSConfig(&n.cfg.TLS)
 	if err != nil {

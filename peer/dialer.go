@@ -3,7 +3,6 @@ package peer
 import (
 	"crypto/tls"
 	"fmt"
-	"log"
 	"math"
 	"math/rand"
 	"net"
@@ -11,6 +10,7 @@ import (
 
 	"talaria/config"
 	"talaria/protocol"
+	"talaria/utils"
 )
 
 const (
@@ -44,7 +44,7 @@ func (d *Dialer) Run() {
 	backoff := dialInitialBackoff
 	for {
 		if err := d.connect(); err != nil {
-			log.Printf("[%s] connection to %s lost: %v — retrying in %v",
+			utils.Errorf("[%s] connection to %s lost: %v; retrying in %v",
 				d.localName, d.peerCfg.Name, err, backoff)
 		}
 		time.Sleep(jitter(backoff))
@@ -58,7 +58,7 @@ func (d *Dialer) connect() error {
 	tc := d.tlsCfg.Clone()
 	tc.ServerName = d.peerCfg.Address
 
-	log.Printf("[%s] dialing %s (%s)", d.localName, d.peerCfg.Name, addr)
+	utils.Infof("[%s] dialing %s (%s)", d.localName, d.peerCfg.Name, addr)
 	rawConn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial tcp: %w", err)
@@ -68,7 +68,7 @@ func (d *Dialer) connect() error {
 		rawConn.Close()
 		return fmt.Errorf("TLS handshake: %w", err)
 	}
-	log.Printf("[%s] connected to %s (%s)", d.localName, d.peerCfg.Name, tlsConn.RemoteAddr())
+	utils.Infof("[%s] connected to %s (%s)", d.localName, d.peerCfg.Name, tlsConn.RemoteAddr())
 
 	var pc *PeerConn
 	pc = newPeerConn(tlsConn, d.localName, func(msgType protocol.MessageType, body []byte) {

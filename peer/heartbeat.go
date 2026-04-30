@@ -1,10 +1,10 @@
 package peer
 
 import (
-	"log"
 	"time"
 
 	"talaria/protocol"
+	"talaria/utils"
 )
 
 // heartbeatSender sends periodic heartbeat requests over a PeerConn.
@@ -22,10 +22,10 @@ func heartbeatSender(pc *PeerConn, localName string, interval time.Duration) {
 		case <-ticker.C:
 			req := protocol.NewHeartbeatReq(localName)
 			if err := pc.Send(protocol.MsgHeartbeatReq, req); err != nil {
-				log.Printf("[%s] heartbeat send to %s failed: %v", localName, pc.RemoteAddr(), err)
+				utils.Errorf("[%s] heartbeat send to %s failed: %v", localName, pc.RemoteAddr(), err)
 				return
 			}
-			log.Printf("[%s] heartbeat sent to %s (id=%s)", localName, pc.RemoteAddr(), req.ID)
+			utils.Debugf("[%s] heartbeat sent to %s (id=%s)", localName, pc.RemoteAddr(), req.ID)
 		}
 	}
 }

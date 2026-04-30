@@ -3,7 +3,6 @@ package hodos
 import (
 	"context"
 	"fmt"
-	"log"
 	"path/filepath"
 	"strings"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"talaria/config"
 	"talaria/connector"
 	"talaria/persistence"
+	"talaria/utils"
 )
 
 const runOnceIdleTimeout = 200 * time.Millisecond
@@ -212,10 +212,23 @@ func (r *runner) write(ctx context.Context, handle any, data []byte) error {
 	if key == "" {
 		key = buildS3Key(r.sourceDir, path, r.s3Prefix)
 	}
+
+	itemKey := r.itemKey(handle)
+	utils.Infof("hodos file start name=%q file=%q sink_key=%q bytes=%d", r.cfg.Name, itemKey, key, len(data))
+	utils.Debugf("hodos chunk start name=%q chunk=1/1 upload_id=%q item=%q bytes=%d overall_processed=%d overall_skipped=%d overall_failed=%d",
+		r.cfg.Name, key, itemKey, len(data), r.processedCount, r.skippedCount, r.failedCount)
+
 	if err := r.markInProgress(ctx, handle, key); err != nil {
 		return err
 	}
-	return r.s3Sink.WriteToKey(ctx, key, data)
+	if err := r.s3Sink.WriteToKey(ctx, key, data); err != nil {
+		return err
+	}
+
+	utils.Debugf("hodos chunk finish name=%q chunk=1/1 upload_id=%q item=%q bytes=%d overall_processed=%d overall_skipped=%d overall_failed=%d",
+		r.cfg.Name, key, itemKey, len(data), r.processedCount, r.skippedCount, r.failedCount)
+	utils.Infof("hodos file finish name=%q file=%q sink_key=%q bytes=%d", r.cfg.Name, itemKey, key, len(data))
+	return nil
 }
 
 func (r *runner) handleExistingCompletion(ctx context.Context, handle any) (bool, error) {
@@ -312,10 +325,14 @@ func (r *runner) logProgress(status string, handle any, message string) {
 		itemKey = "unknown"
 	}
 	if strings.TrimSpace(message) == "" {
-		log.Printf("hodos progress name=%q status=%s item=%q processed=%d skipped=%d failed=%d", r.cfg.Name, status, itemKey, r.processedCount, r.skippedCount, r.failedCount)
+		utils.Infof("hodos progress name=%q status=%s item=%q processed=%d skipped=%d failed=%d", r.cfg.Name, status, itemKey, r.processedCount, r.skippedCount, r.failedCount)
 		return
 	}
-	log.Printf("hodos progress name=%q status=%s item=%q message=%q processed=%d skipped=%d failed=%d", r.cfg.Name, status, itemKey, message, r.processedCount, r.skippedCount, r.failedCount)
+	if strings.EqualFold(status, "failed") {
+		utils.Errorf("hodos progress name=%q status=%s item=%q message=%q processed=%d skipped=%d failed=%d", r.cfg.Name, status, itemKey, message, r.processedCount, r.skippedCount, r.failedCount)
+		return
+	}
+	utils.Infof("hodos progress name=%q status=%s item=%q message=%q processed=%d skipped=%d failed=%d", r.cfg.Name, status, itemKey, message, r.processedCount, r.skippedCount, r.failedCount)
 }
 
 func (r *runner) itemKey(handle any) string {

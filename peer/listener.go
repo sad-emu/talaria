@@ -3,10 +3,10 @@ package peer
 import (
 	"crypto/tls"
 	"fmt"
-	"log"
 	"net"
 
 	"talaria/protocol"
+	"talaria/utils"
 )
 
 // Listener accepts inbound TLS connections and hands them to the Manager.
@@ -33,7 +33,7 @@ func (l *Listener) Listen() error {
 	if err != nil {
 		return fmt.Errorf("listener: bind %s: %w", l.address, err)
 	}
-	log.Printf("[%s] listening on %s", l.localName, l.address)
+	utils.Infof("[%s] listening on %s", l.localName, l.address)
 	defer ln.Close()
 	for {
 		conn, err := ln.Accept()
@@ -45,7 +45,7 @@ func (l *Listener) Listen() error {
 }
 
 func (l *Listener) handleInbound(conn net.Conn) {
-	log.Printf("[%s] inbound connection from %s", l.localName, conn.RemoteAddr())
+	utils.Infof("[%s] inbound connection from %s", l.localName, conn.RemoteAddr())
 	var pc *PeerConn
 	pc = newPeerConn(conn, l.localName, func(msgType protocol.MessageType, body []byte) {
 		handleMessage(pc, l.localName, msgType, body)

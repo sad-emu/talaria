@@ -9,6 +9,7 @@ import (
 
 	"talaria/connector"
 	"talaria/protocol"
+	"talaria/utils"
 )
 
 type PeerContext struct {
@@ -180,6 +181,9 @@ func (m *Manager) handleDataReq(ctx context.Context, peer PeerContext, p protoco
 		return fmt.Errorf("manager: data request missing file uuid")
 	}
 
+	utils.Debugf("[%s] data transfer chunk start transfer_id=%q request_id=%q file_uuid=%q offset=%d length=%d peer_dn=%q",
+		m.Name(), p.TransferId, p.RequestID, p.UUID, p.Offset, p.Length, peer.DN)
+
 	connectorName, err := m.ResolveFileConnector(ctx, p.UUID)
 	if err != nil {
 		return fmt.Errorf("manager: resolve file connector for %q: %w", p.UUID, err)
@@ -189,7 +193,12 @@ func (m *Manager) handleDataReq(ctx context.Context, peer PeerContext, p protoco
 	}
 
 	if m.OnDataReq != nil {
-		return m.OnDataReq(ctx, peer, p)
+		if err := m.OnDataReq(ctx, peer, p); err != nil {
+			return err
+		}
 	}
+
+	utils.Debugf("[%s] data transfer chunk finish transfer_id=%q request_id=%q file_uuid=%q offset=%d length=%d connector=%q",
+		m.Name(), p.TransferId, p.RequestID, p.UUID, p.Offset, p.Length, connectorName)
 	return nil
 }

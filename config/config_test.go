@@ -182,3 +182,29 @@ func TestLoadConfig_AllowedDNs(t *testing.T) {
 		t.Errorf("len(AllowedDNs) = %d, want 2", len(cfg.TLS.AllowedDNs))
 	}
 }
+
+func TestValidate_DefaultsLogLevelToInfo(t *testing.T) {
+	cfg := &Config{
+		Node: NodeConfig{Name: "n", ListenPort: 7000},
+		TLS:  TLSConfig{CertFile: "c", KeyFile: "k", CAFile: "ca"},
+	}
+	if err := validate(cfg); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+	if cfg.GlobalLog.Level != "INFO" {
+		t.Fatalf("GlobalLog.Level = %q, want INFO", cfg.GlobalLog.Level)
+	}
+}
+
+func TestValidate_RejectsInvalidLogLevel(t *testing.T) {
+	cfg := &Config{
+		Node: NodeConfig{Name: "n", ListenPort: 7000},
+		TLS:  TLSConfig{CertFile: "c", KeyFile: "k", CAFile: "ca"},
+		GlobalLog: LogConfig{
+			Level: "TRACE",
+		},
+	}
+	if err := validate(cfg); err == nil {
+		t.Fatal("expected error for invalid GlobalLog.Level")
+	}
+}
