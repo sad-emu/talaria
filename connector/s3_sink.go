@@ -10,8 +10,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
+)
+
+const (
+	defaultMultipartChunkSizeBytes = int64(50 * 1024 * 1024)
+	minimumMultipartChunkSizeBytes = int64(5 * 1024 * 1024)
 )
 
 // S3SinkConfig defines how to connect and write to an S3 bucket.
@@ -23,6 +29,8 @@ type S3SinkConfig struct {
 	ObjectKey string
 	// KeyPrefix is used when object keys are generated per item by a caller.
 	KeyPrefix string
+	// MultipartChunkSizeBytes controls S3 multipart part size. Defaults to 50MB.
+	MultipartChunkSizeBytes int64
 
 	Region            string
 	Endpoint          string
@@ -39,10 +47,13 @@ type s3Client interface {
 	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 }
 
+type uploadFunc func(ctx context.Context, bucket string, key string, data []byte) error
+
 // S3Sink is a dropoff connector that writes payloads to S3.
 type S3Sink struct {
-	cfg    S3SinkConfig
-	client s3Client
+	cfg      S3SinkConfig
+	client   s3Client
+	uploadTo uploadFunc
 }
 
 var _ Sink = (*S3Sink)(nil)
@@ -74,17 +85,46 @@ func NewS3Sink(cfg S3SinkConfig) (*S3Sink, error) {
 			o.BaseEndpoint = aws.String(cfg.Endpoint)
 		}
 	})
+	partSize := cfg.MultipartChunkSizeBytes
+	if partSize <= 0 {
+		partSize = defaultMultipartChunkSizeBytes
+	}
+	uploader := manager.NewUploader(client, func(u *manager.Uploader) {
+		u.PartSize = partSize
+	})
 
-	return newS3SinkWithClient(cfg, client), nil
+	return newS3SinkWithClientAndUploader(cfg, client, func(ctx context.Context, bucket string, key string, data []byte) error {
+		_, err := uploader.Upload(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(key),
+			Body:   bytes.NewReader(data),
+		})
+		return err
+	}), nil
 }
 
 func newS3SinkWithClient(cfg S3SinkConfig, client s3Client) *S3Sink {
+	return newS3SinkWithClientAndUploader(cfg, client, func(ctx context.Context, bucket string, key string, data []byte) error {
+		_, err := client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket:        aws.String(bucket),
+			Key:           aws.String(key),
+			Body:          bytes.NewReader(data),
+			ContentLength: aws.Int64(int64(len(data))),
+		})
+		return err
+	})
+}
+
+func newS3SinkWithClientAndUploader(cfg S3SinkConfig, client s3Client, upload uploadFunc) *S3Sink {
 	name := strings.TrimSpace(cfg.Name)
 	if name == "" {
 		name = "s3"
 	}
 	cfg.Name = name
-	return &S3Sink{cfg: cfg, client: client}
+	if cfg.MultipartChunkSizeBytes <= 0 {
+		cfg.MultipartChunkSizeBytes = defaultMultipartChunkSizeBytes
+	}
+	return &S3Sink{cfg: cfg, client: client, uploadTo: upload}
 }
 
 func (s *S3Sink) Name() string {
@@ -118,14 +158,8 @@ func (s *S3Sink) WriteToKey(ctx context.Context, key string, data []byte) error 
 		}
 	}
 
-	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:        aws.String(s.cfg.Bucket),
-		Key:           aws.String(key),
-		Body:          bytes.NewReader(data),
-		ContentLength: aws.Int64(int64(len(data))),
-	})
-	if err != nil {
-		return fmt.Errorf("s3 sink: put object s3://%s/%s: %w", s.cfg.Bucket, key, err)
+	if err := s.uploadTo(ctx, s.cfg.Bucket, key, data); err != nil {
+		return fmt.Errorf("s3 sink: upload object s3://%s/%s: %w", s.cfg.Bucket, key, err)
 	}
 
 	return nil
@@ -150,6 +184,12 @@ func validateS3Config(cfg S3SinkConfig) error {
 	}
 	if strings.TrimSpace(cfg.SecretAccessKey) == "" {
 		return fmt.Errorf("s3 sink: SecretAccessKey is required")
+	}
+	if cfg.MultipartChunkSizeBytes <= 0 {
+		cfg.MultipartChunkSizeBytes = defaultMultipartChunkSizeBytes
+	}
+	if cfg.MultipartChunkSizeBytes < minimumMultipartChunkSizeBytes {
+		return fmt.Errorf("s3 sink: MultipartChunkSizeBytes must be at least %d", minimumMultipartChunkSizeBytes)
 	}
 	return nil
 }

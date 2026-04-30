@@ -51,8 +51,15 @@ type HodosProgress struct {
 	SinkKey           string
 	Status            string
 	Message           string
+	StartedUnixNano   int64
 	UpdatedUnixNano   int64
 	CompletedUnixNano int64
+	DurationUnixNano  int64
+	SizeBytes         int64
+	SourceType        string
+	SourceDetails     string
+	DestinationType   string
+	DestinationDetail string
 }
 
 type HodosProgressSummary struct {

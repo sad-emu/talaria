@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -70,8 +71,15 @@ CREATE TABLE IF NOT EXISTS hodos_progress (
 	sink_key TEXT NOT NULL,
 	status TEXT NOT NULL,
 	message TEXT NOT NULL,
+	started_ns INTEGER NOT NULL DEFAULT 0,
 	updated_ns INTEGER NOT NULL,
 	completed_ns INTEGER NOT NULL,
+	duration_ns INTEGER NOT NULL DEFAULT 0,
+	size_bytes INTEGER NOT NULL DEFAULT 0,
+	source_type TEXT NOT NULL DEFAULT '',
+	source_details TEXT NOT NULL DEFAULT '',
+	destination_type TEXT NOT NULL DEFAULT '',
+	destination_detail TEXT NOT NULL DEFAULT '',
 	PRIMARY KEY (hodos_name, item_key)
 );
 
@@ -80,6 +88,58 @@ CREATE INDEX IF NOT EXISTS idx_hodos_progress_status ON hodos_progress(hodos_nam
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("persistence: init schema: %w", err)
 	}
+	if err := s.ensureHodosProgressColumns(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteTransferStore) ensureHodosProgressColumns(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info(hodos_progress);")
+	if err != nil {
+		return fmt.Errorf("persistence: hodos_progress schema inspect: %w", err)
+	}
+	defer rows.Close()
+
+	cols := map[string]struct{}{}
+	for rows.Next() {
+		var cid int
+		var name string
+		var dataType string
+		var notNull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &dflt, &pk); err != nil {
+			return fmt.Errorf("persistence: hodos_progress schema scan: %w", err)
+		}
+		cols[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("persistence: hodos_progress schema rows: %w", err)
+	}
+
+	needed := []struct {
+		name string
+		ddl  string
+	}{
+		{name: "started_ns", ddl: "ALTER TABLE hodos_progress ADD COLUMN started_ns INTEGER NOT NULL DEFAULT 0;"},
+		{name: "duration_ns", ddl: "ALTER TABLE hodos_progress ADD COLUMN duration_ns INTEGER NOT NULL DEFAULT 0;"},
+		{name: "size_bytes", ddl: "ALTER TABLE hodos_progress ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;"},
+		{name: "source_type", ddl: "ALTER TABLE hodos_progress ADD COLUMN source_type TEXT NOT NULL DEFAULT '';"},
+		{name: "source_details", ddl: "ALTER TABLE hodos_progress ADD COLUMN source_details TEXT NOT NULL DEFAULT '';"},
+		{name: "destination_type", ddl: "ALTER TABLE hodos_progress ADD COLUMN destination_type TEXT NOT NULL DEFAULT '';"},
+		{name: "destination_detail", ddl: "ALTER TABLE hodos_progress ADD COLUMN destination_detail TEXT NOT NULL DEFAULT '';"},
+	}
+
+	for _, col := range needed {
+		if _, ok := cols[col.name]; ok {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, col.ddl); err != nil {
+			return fmt.Errorf("persistence: add hodos_progress column %s: %w", col.name, err)
+		}
+	}
+
 	return nil
 }
 
@@ -182,17 +242,38 @@ func (s *SQLiteTransferStore) DeleteClaim(ctx context.Context, transferID string
 func (s *SQLiteTransferStore) UpsertHodosProgress(ctx context.Context, p HodosProgress) error {
 	const q = `
 INSERT INTO hodos_progress (
-  hodos_name, item_key, sink_key, status, message, updated_ns, completed_ns
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+  hodos_name, item_key, sink_key, status, message, started_ns, updated_ns, completed_ns,
+  duration_ns, size_bytes, source_type, source_details, destination_type, destination_detail
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(hodos_name, item_key) DO UPDATE SET
   sink_key=excluded.sink_key,
   status=excluded.status,
   message=excluded.message,
+  started_ns=excluded.started_ns,
   updated_ns=excluded.updated_ns,
-  completed_ns=excluded.completed_ns;
+  completed_ns=excluded.completed_ns,
+  duration_ns=excluded.duration_ns,
+  size_bytes=excluded.size_bytes,
+  source_type=excluded.source_type,
+  source_details=excluded.source_details,
+  destination_type=excluded.destination_type,
+  destination_detail=excluded.destination_detail;
 `
 	_, err := s.db.ExecContext(ctx, q,
-		p.HodosName, p.ItemKey, p.SinkKey, p.Status, p.Message, p.UpdatedUnixNano, p.CompletedUnixNano,
+		p.HodosName,
+		p.ItemKey,
+		p.SinkKey,
+		p.Status,
+		p.Message,
+		p.StartedUnixNano,
+		p.UpdatedUnixNano,
+		p.CompletedUnixNano,
+		p.DurationUnixNano,
+		p.SizeBytes,
+		p.SourceType,
+		p.SourceDetails,
+		p.DestinationType,
+		p.DestinationDetail,
 	)
 	if err != nil {
 		return fmt.Errorf("persistence: upsert hodos progress: %w", err)
@@ -202,13 +283,27 @@ ON CONFLICT(hodos_name, item_key) DO UPDATE SET
 
 func (s *SQLiteTransferStore) GetHodosProgress(ctx context.Context, hodosName string, itemKey string) (*HodosProgress, error) {
 	const q = `
-SELECT hodos_name, item_key, sink_key, status, message, updated_ns, completed_ns
+SELECT hodos_name, item_key, sink_key, status, message, started_ns, updated_ns, completed_ns,
+       duration_ns, size_bytes, source_type, source_details, destination_type, destination_detail
 FROM hodos_progress
 WHERE hodos_name = ? AND item_key = ?;
 `
 	var p HodosProgress
 	err := s.db.QueryRowContext(ctx, q, hodosName, itemKey).Scan(
-		&p.HodosName, &p.ItemKey, &p.SinkKey, &p.Status, &p.Message, &p.UpdatedUnixNano, &p.CompletedUnixNano,
+		&p.HodosName,
+		&p.ItemKey,
+		&p.SinkKey,
+		&p.Status,
+		&p.Message,
+		&p.StartedUnixNano,
+		&p.UpdatedUnixNano,
+		&p.CompletedUnixNano,
+		&p.DurationUnixNano,
+		&p.SizeBytes,
+		&p.SourceType,
+		&p.SourceDetails,
+		&p.DestinationType,
+		&p.DestinationDetail,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -228,7 +323,8 @@ func (s *SQLiteTransferStore) ListHodosProgress(ctx context.Context, hodosName s
 	}
 
 	const q = `
-SELECT hodos_name, item_key, sink_key, status, message, updated_ns, completed_ns
+SELECT hodos_name, item_key, sink_key, status, message, started_ns, updated_ns, completed_ns,
+       duration_ns, size_bytes, source_type, source_details, destination_type, destination_detail
 FROM hodos_progress
 WHERE hodos_name = ?
 ORDER BY updated_ns DESC, item_key ASC
@@ -249,8 +345,15 @@ LIMIT ? OFFSET ?;
 			&p.SinkKey,
 			&p.Status,
 			&p.Message,
+			&p.StartedUnixNano,
 			&p.UpdatedUnixNano,
 			&p.CompletedUnixNano,
+			&p.DurationUnixNano,
+			&p.SizeBytes,
+			&p.SourceType,
+			&p.SourceDetails,
+			&p.DestinationType,
+			&p.DestinationDetail,
 		); err != nil {
 			return nil, fmt.Errorf("persistence: list hodos progress scan: %w", err)
 		}

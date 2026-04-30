@@ -3,6 +3,7 @@ package hodos
 import (
 	"context"
 	"testing"
+	"time"
 
 	"talaria/config"
 	"talaria/persistence"
@@ -52,14 +53,22 @@ func (f *fakeSource) Ack(context.Context, any) error { f.ackCnt++; return nil }
 func (f *fakeSource) Close() error                   { return nil }
 
 type fakeKeyWriter struct {
-	keys []string
-	data [][]byte
-	err  error
+	keys  []string
+	data  [][]byte
+	err   error
+	delay time.Duration
 }
 
-func (f *fakeKeyWriter) WriteToKey(_ context.Context, key string, data []byte) error {
+func (f *fakeKeyWriter) WriteToKey(ctx context.Context, key string, data []byte) error {
 	if f.err != nil {
 		return f.err
+	}
+	if f.delay > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(f.delay):
+		}
 	}
 	f.keys = append(f.keys, key)
 	f.data = append(f.data, append([]byte(nil), data...))
@@ -68,11 +77,15 @@ func (f *fakeKeyWriter) WriteToKey(_ context.Context, key string, data []byte) e
 func (f *fakeKeyWriter) Close() error { return nil }
 
 type fakeStore struct {
-	records map[string]persistence.HodosProgress
+	records           map[string]persistence.HodosProgress
+	inProgressUpserts map[string]int
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{records: map[string]persistence.HodosProgress{}}
+	return &fakeStore{
+		records:           map[string]persistence.HodosProgress{},
+		inProgressUpserts: map[string]int{},
+	}
 }
 
 func (f *fakeStore) UpsertClaim(context.Context, persistence.TransferClaim) error { return nil }
@@ -85,7 +98,11 @@ func (f *fakeStore) ExpireClaimsBefore(context.Context, int64) (int64, error)   
 func (f *fakeStore) DeleteClaim(context.Context, string) error                  { return nil }
 func (f *fakeStore) Close() error                                               { return nil }
 func (f *fakeStore) UpsertHodosProgress(_ context.Context, p persistence.HodosProgress) error {
-	f.records[p.HodosName+"|"+p.ItemKey] = p
+	key := p.HodosName + "|" + p.ItemKey
+	f.records[key] = p
+	if p.Status == "in_progress" {
+		f.inProgressUpserts[key]++
+	}
 	return nil
 }
 func (f *fakeStore) GetHodosProgress(_ context.Context, hodosName string, itemKey string) (*persistence.HodosProgress, error) {
@@ -159,6 +176,15 @@ func TestRunner_StoresCompletedProgress(t *testing.T) {
 	}
 	if p.Status != "completed" {
 		t.Fatalf("status = %q, want completed", p.Status)
+	}
+	if p.SizeBytes != int64(len("payload")) {
+		t.Fatalf("size bytes = %d, want %d", p.SizeBytes, len("payload"))
+	}
+	if p.SourceType != "local" || p.DestinationType != "s3" {
+		t.Fatalf("source/destination types = %q/%q, want local/s3", p.SourceType, p.DestinationType)
+	}
+	if p.StartedUnixNano <= 0 || p.DurationUnixNano < 0 {
+		t.Fatalf("unexpected timing fields: started=%d duration=%d", p.StartedUnixNano, p.DurationUnixNano)
 	}
 	if len(sink.keys) != 1 || sink.keys[0] != "uploads/a.txt" {
 		t.Fatalf("sink keys = %#v", sink.keys)
@@ -243,5 +269,44 @@ func TestRunner_StoresFailedProgressOnWriteError(t *testing.T) {
 	}
 	if p.Message == "" {
 		t.Fatalf("failed progress message should not be empty")
+	}
+	if p.SizeBytes != int64(len("payload")) {
+		t.Fatalf("size bytes = %d, want %d", p.SizeBytes, len("payload"))
+	}
+	if p.SourceType != "local" || p.DestinationType != "s3" {
+		t.Fatalf("source/destination types = %q/%q, want local/s3", p.SourceType, p.DestinationType)
+	}
+}
+
+func TestRunner_RefreshesInProgressDuringWrite(t *testing.T) {
+	store := newFakeStore()
+	source := &fakeSource{reads: []struct {
+		data   []byte
+		handle any
+	}{{data: []byte("payload"), handle: "/tmp/in/a.txt"}}}
+	sink := &fakeKeyWriter{delay: 1300 * time.Millisecond}
+
+	r := &runner{
+		cfg: config.HodosConfig{
+			Name:    "flow-a",
+			Dropoff: config.HodosEndpointConfig{S3: &config.HodosS3Config{KeyPrefix: "uploads"}},
+		},
+		store:     store,
+		source:    source,
+		sourceDir: "/tmp/in",
+		sinkType:  "s3",
+		s3Sink:    sink,
+		s3Prefix:  "uploads",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := r.runOnce(ctx); err != nil {
+		t.Fatalf("runOnce() error = %v", err)
+	}
+
+	key := "flow-a|/tmp/in/a.txt"
+	if store.inProgressUpserts[key] < 2 {
+		t.Fatalf("in-progress upserts = %d, want at least 2", store.inProgressUpserts[key])
 	}
 }

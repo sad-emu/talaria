@@ -14,6 +14,7 @@ import (
 )
 
 const runOnceIdleTimeout = 200 * time.Millisecond
+const inProgressRefreshInterval = 500 * time.Millisecond
 
 type keyWriter interface {
 	WriteToKey(ctx context.Context, key string, data []byte) error
@@ -87,17 +88,18 @@ func newRunner(hc config.HodosConfig, store persistence.TransferStore) (*runner,
 	}
 
 	s3Cfg := connector.S3SinkConfig{
-		Name:              hc.Name + "-dropoff-s3",
-		Bucket:            hc.Dropoff.S3.Bucket,
-		ObjectKey:         hc.Dropoff.S3.ObjectKey,
-		KeyPrefix:         hc.Dropoff.S3.KeyPrefix,
-		Region:            hc.Dropoff.S3.Region,
-		Endpoint:          hc.Dropoff.S3.Endpoint,
-		UsePathStyle:      hc.Dropoff.S3.UsePathStyle,
-		OverwriteExisting: hc.Dropoff.S3.OverwriteExisting,
-		AccessKeyID:       hc.Dropoff.S3.AccessKeyID,
-		SecretAccessKey:   hc.Dropoff.S3.SecretAccessKey,
-		SessionToken:      hc.Dropoff.S3.SessionToken,
+		Name:                    hc.Name + "-dropoff-s3",
+		Bucket:                  hc.Dropoff.S3.Bucket,
+		ObjectKey:               hc.Dropoff.S3.ObjectKey,
+		KeyPrefix:               hc.Dropoff.S3.KeyPrefix,
+		MultipartChunkSizeBytes: int64(hc.Dropoff.S3.MultipartChunkSizeMB) * 1024 * 1024,
+		Region:                  hc.Dropoff.S3.Region,
+		Endpoint:                hc.Dropoff.S3.Endpoint,
+		UsePathStyle:            hc.Dropoff.S3.UsePathStyle,
+		OverwriteExisting:       hc.Dropoff.S3.OverwriteExisting,
+		AccessKeyID:             hc.Dropoff.S3.AccessKeyID,
+		SecretAccessKey:         hc.Dropoff.S3.SecretAccessKey,
+		SessionToken:            hc.Dropoff.S3.SessionToken,
 	}
 	sink, err := connector.NewS3Sink(s3Cfg)
 	if err != nil {
@@ -218,17 +220,78 @@ func (r *runner) write(ctx context.Context, handle any, data []byte) error {
 	utils.Debugf("hodos chunk start name=%q chunk=1/1 upload_id=%q item=%q bytes=%d overall_processed=%d overall_skipped=%d overall_failed=%d",
 		r.cfg.Name, key, itemKey, len(data), r.processedCount, r.skippedCount, r.failedCount)
 
-	if err := r.markInProgress(ctx, handle, key); err != nil {
+	if err := r.markInProgress(ctx, handle, key, int64(len(data))); err != nil {
 		return err
 	}
+
+	refreshCtx, stopRefresh := context.WithCancel(ctx)
+	defer stopRefresh()
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		r.refreshInProgressLoop(refreshCtx, handle, key)
+	}()
+
 	if err := r.s3Sink.WriteToKey(ctx, key, data); err != nil {
+		stopRefresh()
+		<-refreshDone
 		return err
 	}
+	stopRefresh()
+	<-refreshDone
 
 	utils.Debugf("hodos chunk finish name=%q chunk=1/1 upload_id=%q item=%q bytes=%d overall_processed=%d overall_skipped=%d overall_failed=%d",
 		r.cfg.Name, key, itemKey, len(data), r.processedCount, r.skippedCount, r.failedCount)
 	utils.Infof("hodos file finish name=%q file=%q sink_key=%q bytes=%d", r.cfg.Name, itemKey, key, len(data))
 	return nil
+}
+
+func (r *runner) refreshInProgressLoop(ctx context.Context, handle any, sinkKey string) {
+	if r.store == nil {
+		return
+	}
+	ticker := time.NewTicker(inProgressRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := r.touchInProgress(ctx, handle, sinkKey); err != nil {
+				utils.Errorf("hodos progress refresh failed name=%q item=%q: %v", r.cfg.Name, r.itemKey(handle), err)
+			}
+		}
+	}
+}
+
+func (r *runner) touchInProgress(ctx context.Context, handle any, sinkKey string) error {
+	if r.store == nil {
+		return nil
+	}
+	itemKey := r.itemKey(handle)
+	if itemKey == "" {
+		return nil
+	}
+	p, err := r.store.GetHodosProgress(ctx, r.cfg.Name, itemKey)
+	if err != nil {
+		return err
+	}
+	if p == nil || !strings.EqualFold(p.Status, "in_progress") {
+		return nil
+	}
+	now := time.Now().UnixNano()
+	started := p.StartedUnixNano
+	if started <= 0 {
+		started = now
+	}
+	p.SinkKey = sinkKey
+	p.StartedUnixNano = started
+	p.UpdatedUnixNano = now
+	p.DurationUnixNano = now - started
+	if p.DurationUnixNano < 0 {
+		p.DurationUnixNano = 0
+	}
+	return r.store.UpsertHodosProgress(ctx, *p)
 }
 
 func (r *runner) handleExistingCompletion(ctx context.Context, handle any) (bool, error) {
@@ -254,7 +317,7 @@ func (r *runner) handleExistingCompletion(ctx context.Context, handle any) (bool
 	return true, nil
 }
 
-func (r *runner) markInProgress(ctx context.Context, handle any, sinkKey string) error {
+func (r *runner) markInProgress(ctx context.Context, handle any, sinkKey string, sizeBytes int64) error {
 	if r.store == nil {
 		return nil
 	}
@@ -263,12 +326,20 @@ func (r *runner) markInProgress(ctx context.Context, handle any, sinkKey string)
 		return nil
 	}
 	now := time.Now().UnixNano()
+	sourceType, sourceDetails := r.transferSource(itemKey)
+	destinationType, destinationDetails := r.transferDestination(sinkKey)
 	return r.store.UpsertHodosProgress(ctx, persistence.HodosProgress{
-		HodosName:       r.cfg.Name,
-		ItemKey:         itemKey,
-		SinkKey:         sinkKey,
-		Status:          "in_progress",
-		UpdatedUnixNano: now,
+		HodosName:         r.cfg.Name,
+		ItemKey:           itemKey,
+		SinkKey:           sinkKey,
+		Status:            "in_progress",
+		StartedUnixNano:   now,
+		UpdatedUnixNano:   now,
+		SizeBytes:         sizeBytes,
+		SourceType:        sourceType,
+		SourceDetails:     sourceDetails,
+		DestinationType:   destinationType,
+		DestinationDetail: destinationDetails,
 	})
 }
 
@@ -285,14 +356,49 @@ func (r *runner) markCompleted(ctx context.Context, handle any) error {
 		sinkKey = buildS3Key(r.sourceDir, itemKey, r.s3Prefix)
 	}
 	now := time.Now().UnixNano()
+	prev, err := r.store.GetHodosProgress(ctx, r.cfg.Name, itemKey)
+	if err != nil {
+		return err
+	}
+	started := now
+	sizeBytes := int64(0)
+	sourceType := "local"
+	sourceDetails := itemKey
+	destinationType := "s3"
+	destinationDetails := fmt.Sprintf("bucket=%s key=%s", r.cfg.Dropoff.S3.Bucket, sinkKey)
+	if prev != nil {
+		if prev.StartedUnixNano > 0 {
+			started = prev.StartedUnixNano
+		}
+		sizeBytes = prev.SizeBytes
+		if strings.TrimSpace(prev.SourceType) != "" {
+			sourceType = prev.SourceType
+		}
+		if strings.TrimSpace(prev.SourceDetails) != "" {
+			sourceDetails = prev.SourceDetails
+		}
+		if strings.TrimSpace(prev.DestinationType) != "" {
+			destinationType = prev.DestinationType
+		}
+		if strings.TrimSpace(prev.DestinationDetail) != "" {
+			destinationDetails = prev.DestinationDetail
+		}
+	}
 	return r.store.UpsertHodosProgress(ctx, persistence.HodosProgress{
 		HodosName:         r.cfg.Name,
 		ItemKey:           itemKey,
 		SinkKey:           sinkKey,
 		Status:            "completed",
 		Message:           "",
+		StartedUnixNano:   started,
 		UpdatedUnixNano:   now,
 		CompletedUnixNano: now,
+		DurationUnixNano:  now - started,
+		SizeBytes:         sizeBytes,
+		SourceType:        sourceType,
+		SourceDetails:     sourceDetails,
+		DestinationType:   destinationType,
+		DestinationDetail: destinationDetails,
 	})
 }
 
@@ -309,14 +415,67 @@ func (r *runner) markFailed(ctx context.Context, handle any, message string) err
 		sinkKey = buildS3Key(r.sourceDir, itemKey, r.s3Prefix)
 	}
 	now := time.Now().UnixNano()
+	prev, err := r.store.GetHodosProgress(ctx, r.cfg.Name, itemKey)
+	if err != nil {
+		return err
+	}
+	started := now
+	sizeBytes := int64(0)
+	sourceType := "local"
+	sourceDetails := itemKey
+	destinationType := "s3"
+	destinationDetails := fmt.Sprintf("bucket=%s key=%s", r.cfg.Dropoff.S3.Bucket, sinkKey)
+	if prev != nil {
+		if prev.StartedUnixNano > 0 {
+			started = prev.StartedUnixNano
+		}
+		sizeBytes = prev.SizeBytes
+		if strings.TrimSpace(prev.SourceType) != "" {
+			sourceType = prev.SourceType
+		}
+		if strings.TrimSpace(prev.SourceDetails) != "" {
+			sourceDetails = prev.SourceDetails
+		}
+		if strings.TrimSpace(prev.DestinationType) != "" {
+			destinationType = prev.DestinationType
+		}
+		if strings.TrimSpace(prev.DestinationDetail) != "" {
+			destinationDetails = prev.DestinationDetail
+		}
+	}
 	return r.store.UpsertHodosProgress(ctx, persistence.HodosProgress{
-		HodosName:       r.cfg.Name,
-		ItemKey:         itemKey,
-		SinkKey:         sinkKey,
-		Status:          "failed",
-		Message:         strings.TrimSpace(message),
-		UpdatedUnixNano: now,
+		HodosName:         r.cfg.Name,
+		ItemKey:           itemKey,
+		SinkKey:           sinkKey,
+		Status:            "failed",
+		Message:           strings.TrimSpace(message),
+		StartedUnixNano:   started,
+		UpdatedUnixNano:   now,
+		DurationUnixNano:  now - started,
+		SizeBytes:         sizeBytes,
+		SourceType:        sourceType,
+		SourceDetails:     sourceDetails,
+		DestinationType:   destinationType,
+		DestinationDetail: destinationDetails,
 	})
+}
+
+func (r *runner) transferSource(itemKey string) (string, string) {
+	base := strings.TrimSpace(r.sourceDir)
+	if base == "" {
+		return "local", fmt.Sprintf("path=%s", itemKey)
+	}
+	return "local", fmt.Sprintf("base=%s path=%s", base, itemKey)
+}
+
+func (r *runner) transferDestination(sinkKey string) (string, string) {
+	bucket := strings.TrimSpace(r.cfg.Dropoff.S3.Bucket)
+	key := strings.TrimSpace(sinkKey)
+	region := strings.TrimSpace(r.cfg.Dropoff.S3.Region)
+	if region == "" {
+		return "s3", fmt.Sprintf("bucket=%s key=%s", bucket, key)
+	}
+	return "s3", fmt.Sprintf("bucket=%s key=%s region=%s", bucket, key, region)
 }
 
 func (r *runner) logProgress(status string, handle any, message string) {

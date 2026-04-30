@@ -42,6 +42,7 @@ Hodos:
       S3:
         Bucket: "my-bucket"
         KeyPrefix: "talaria-tests"
+        MultipartChunkSizeMB: 50
         Region: "us-east-1"
         Endpoint: ""
         UsePathStyle: false

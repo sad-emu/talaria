@@ -135,6 +135,12 @@ func validate(cfg *Config) error {
 			if strings.TrimSpace(s3cfg.SecretAccessKey) == "" {
 				return fmt.Errorf("Hodos[%d].Dropoff.S3.SecretAccessKey is required", i)
 			}
+			if s3cfg.MultipartChunkSizeMB <= 0 {
+				s3cfg.MultipartChunkSizeMB = 50
+			}
+			if s3cfg.MultipartChunkSizeMB < 5 {
+				return fmt.Errorf("Hodos[%d].Dropoff.S3.MultipartChunkSizeMB must be at least 5", i)
+			}
 		case "talaria":
 			// Placeholder for upcoming talaria dropoff mode.
 		default:

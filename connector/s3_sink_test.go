@@ -87,6 +87,14 @@ func TestValidateS3Config_RequiredFields(t *testing.T) {
 	}
 }
 
+func TestValidateS3Config_MultipartChunkSizeMinimum(t *testing.T) {
+	cfg := baseS3Cfg()
+	cfg.MultipartChunkSizeBytes = 4 * 1024 * 1024
+	if err := validateS3Config(cfg); err == nil {
+		t.Fatalf("expected validation error for multipart chunk size below 5MB")
+	}
+}
+
 func TestS3Sink_Name_Default(t *testing.T) {
 	s := newS3SinkWithClient(baseS3Cfg(), &mockS3Client{})
 	if got := s.Name(); got != "s3" {

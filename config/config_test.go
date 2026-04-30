@@ -208,3 +208,61 @@ func TestValidate_RejectsInvalidLogLevel(t *testing.T) {
 		t.Fatal("expected error for invalid GlobalLog.Level")
 	}
 }
+
+func TestValidate_DefaultsMultipartChunkSizeMB(t *testing.T) {
+	cfg := &Config{
+		Node: NodeConfig{Name: "n", ListenPort: 7000},
+		TLS:  TLSConfig{CertFile: "c", KeyFile: "k", CAFile: "ca"},
+		Hodos: []HodosConfig{{
+			Name: "h1",
+			Pickup: HodosEndpointConfig{
+				Type:  "local",
+				Local: &HodosLocalConfig{Path: "/tmp/in"},
+			},
+			Dropoff: HodosEndpointConfig{
+				Type: "s3",
+				S3: &HodosS3Config{
+					Bucket:          "b",
+					KeyPrefix:       "k",
+					Region:          "us-east-1",
+					AccessKeyID:     "a",
+					SecretAccessKey: "s",
+				},
+			},
+		}},
+	}
+	if err := validate(cfg); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+	if got := cfg.Hodos[0].Dropoff.S3.MultipartChunkSizeMB; got != 50 {
+		t.Fatalf("MultipartChunkSizeMB = %d, want 50", got)
+	}
+}
+
+func TestValidate_RejectsSmallMultipartChunkSizeMB(t *testing.T) {
+	cfg := &Config{
+		Node: NodeConfig{Name: "n", ListenPort: 7000},
+		TLS:  TLSConfig{CertFile: "c", KeyFile: "k", CAFile: "ca"},
+		Hodos: []HodosConfig{{
+			Name: "h1",
+			Pickup: HodosEndpointConfig{
+				Type:  "local",
+				Local: &HodosLocalConfig{Path: "/tmp/in"},
+			},
+			Dropoff: HodosEndpointConfig{
+				Type: "s3",
+				S3: &HodosS3Config{
+					Bucket:               "b",
+					KeyPrefix:            "k",
+					Region:               "us-east-1",
+					AccessKeyID:          "a",
+					SecretAccessKey:      "s",
+					MultipartChunkSizeMB: 1,
+				},
+			},
+		}},
+	}
+	if err := validate(cfg); err == nil {
+		t.Fatal("expected error for multipart chunk size below minimum")
+	}
+}

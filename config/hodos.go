@@ -30,16 +30,17 @@ type HodosLocalConfig struct {
 
 // HodosS3Config configures S3 dropoff.
 type HodosS3Config struct {
-	Bucket            string `yaml:"Bucket"`
-	ObjectKey         string `yaml:"ObjectKey,omitempty"`
-	KeyPrefix         string `yaml:"KeyPrefix,omitempty"`
-	Region            string `yaml:"Region"`
-	Endpoint          string `yaml:"Endpoint,omitempty"`
-	UsePathStyle      bool   `yaml:"UsePathStyle"`
-	OverwriteExisting bool   `yaml:"OverwriteExisting"`
-	AccessKeyID       string `yaml:"AccessKeyID"`
-	SecretAccessKey   string `yaml:"SecretAccessKey"`
-	SessionToken      string `yaml:"SessionToken,omitempty"`
+	Bucket               string `yaml:"Bucket"`
+	ObjectKey            string `yaml:"ObjectKey,omitempty"`
+	KeyPrefix            string `yaml:"KeyPrefix,omitempty"`
+	MultipartChunkSizeMB int    `yaml:"MultipartChunkSizeMB,omitempty"`
+	Region               string `yaml:"Region"`
+	Endpoint             string `yaml:"Endpoint,omitempty"`
+	UsePathStyle         bool   `yaml:"UsePathStyle"`
+	OverwriteExisting    bool   `yaml:"OverwriteExisting"`
+	AccessKeyID          string `yaml:"AccessKeyID"`
+	SecretAccessKey      string `yaml:"SecretAccessKey"`
+	SessionToken         string `yaml:"SessionToken,omitempty"`
 }
 
 // HodosTalariaConfig is a placeholder for talaria-native transfers.
