@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS hodos_progress (
 	completed_ns INTEGER NOT NULL,
 	duration_ns INTEGER NOT NULL DEFAULT 0,
 	size_bytes INTEGER NOT NULL DEFAULT 0,
+	uploaded_bytes INTEGER NOT NULL DEFAULT 0,
 	source_type TEXT NOT NULL DEFAULT '',
 	source_details TEXT NOT NULL DEFAULT '',
 	destination_type TEXT NOT NULL DEFAULT '',
@@ -125,6 +126,7 @@ func (s *SQLiteTransferStore) ensureHodosProgressColumns(ctx context.Context) er
 		{name: "started_ns", ddl: "ALTER TABLE hodos_progress ADD COLUMN started_ns INTEGER NOT NULL DEFAULT 0;"},
 		{name: "duration_ns", ddl: "ALTER TABLE hodos_progress ADD COLUMN duration_ns INTEGER NOT NULL DEFAULT 0;"},
 		{name: "size_bytes", ddl: "ALTER TABLE hodos_progress ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0;"},
+		{name: "uploaded_bytes", ddl: "ALTER TABLE hodos_progress ADD COLUMN uploaded_bytes INTEGER NOT NULL DEFAULT 0;"},
 		{name: "source_type", ddl: "ALTER TABLE hodos_progress ADD COLUMN source_type TEXT NOT NULL DEFAULT '';"},
 		{name: "source_details", ddl: "ALTER TABLE hodos_progress ADD COLUMN source_details TEXT NOT NULL DEFAULT '';"},
 		{name: "destination_type", ddl: "ALTER TABLE hodos_progress ADD COLUMN destination_type TEXT NOT NULL DEFAULT '';"},
@@ -243,8 +245,8 @@ func (s *SQLiteTransferStore) UpsertHodosProgress(ctx context.Context, p HodosPr
 	const q = `
 INSERT INTO hodos_progress (
   hodos_name, item_key, sink_key, status, message, started_ns, updated_ns, completed_ns,
-  duration_ns, size_bytes, source_type, source_details, destination_type, destination_detail
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	duration_ns, size_bytes, uploaded_bytes, source_type, source_details, destination_type, destination_detail
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(hodos_name, item_key) DO UPDATE SET
   sink_key=excluded.sink_key,
   status=excluded.status,
@@ -254,6 +256,7 @@ ON CONFLICT(hodos_name, item_key) DO UPDATE SET
   completed_ns=excluded.completed_ns,
   duration_ns=excluded.duration_ns,
   size_bytes=excluded.size_bytes,
+	uploaded_bytes=excluded.uploaded_bytes,
   source_type=excluded.source_type,
   source_details=excluded.source_details,
   destination_type=excluded.destination_type,
@@ -270,6 +273,7 @@ ON CONFLICT(hodos_name, item_key) DO UPDATE SET
 		p.CompletedUnixNano,
 		p.DurationUnixNano,
 		p.SizeBytes,
+		p.UploadedBytes,
 		p.SourceType,
 		p.SourceDetails,
 		p.DestinationType,
@@ -284,7 +288,7 @@ ON CONFLICT(hodos_name, item_key) DO UPDATE SET
 func (s *SQLiteTransferStore) GetHodosProgress(ctx context.Context, hodosName string, itemKey string) (*HodosProgress, error) {
 	const q = `
 SELECT hodos_name, item_key, sink_key, status, message, started_ns, updated_ns, completed_ns,
-       duration_ns, size_bytes, source_type, source_details, destination_type, destination_detail
+	duration_ns, size_bytes, uploaded_bytes, source_type, source_details, destination_type, destination_detail
 FROM hodos_progress
 WHERE hodos_name = ? AND item_key = ?;
 `
@@ -300,6 +304,7 @@ WHERE hodos_name = ? AND item_key = ?;
 		&p.CompletedUnixNano,
 		&p.DurationUnixNano,
 		&p.SizeBytes,
+		&p.UploadedBytes,
 		&p.SourceType,
 		&p.SourceDetails,
 		&p.DestinationType,
@@ -324,7 +329,7 @@ func (s *SQLiteTransferStore) ListHodosProgress(ctx context.Context, hodosName s
 
 	const q = `
 SELECT hodos_name, item_key, sink_key, status, message, started_ns, updated_ns, completed_ns,
-       duration_ns, size_bytes, source_type, source_details, destination_type, destination_detail
+	duration_ns, size_bytes, uploaded_bytes, source_type, source_details, destination_type, destination_detail
 FROM hodos_progress
 WHERE hodos_name = ?
 ORDER BY updated_ns DESC, item_key ASC
@@ -350,6 +355,7 @@ LIMIT ? OFFSET ?;
 			&p.CompletedUnixNano,
 			&p.DurationUnixNano,
 			&p.SizeBytes,
+			&p.UploadedBytes,
 			&p.SourceType,
 			&p.SourceDetails,
 			&p.DestinationType,

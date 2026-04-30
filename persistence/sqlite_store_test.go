@@ -261,6 +261,8 @@ func TestSQLiteStore_HodosProgress_UpsertGetDelete(t *testing.T) {
 		Message:           "ok",
 		UpdatedUnixNano:   now,
 		CompletedUnixNano: now,
+		SizeBytes:         10,
+		UploadedBytes:     10,
 	}
 	if err := store.UpsertHodosProgress(ctx, rec); err != nil {
 		t.Fatalf("UpsertHodosProgress() error = %v", err)
@@ -276,9 +278,13 @@ func TestSQLiteStore_HodosProgress_UpsertGetDelete(t *testing.T) {
 	if got.Status != "completed" || got.SinkKey != rec.SinkKey {
 		t.Fatalf("GetHodosProgress() = %+v, want status=completed sink=%q", got, rec.SinkKey)
 	}
+	if got.UploadedBytes != 10 {
+		t.Fatalf("GetHodosProgress() uploaded_bytes = %d, want 10", got.UploadedBytes)
+	}
 
 	rec.Status = "in_progress"
 	rec.CompletedUnixNano = 0
+	rec.UploadedBytes = 3
 	if err := store.UpsertHodosProgress(ctx, rec); err != nil {
 		t.Fatalf("UpsertHodosProgress() update error = %v", err)
 	}
@@ -288,6 +294,9 @@ func TestSQLiteStore_HodosProgress_UpsertGetDelete(t *testing.T) {
 	}
 	if got.Status != "in_progress" {
 		t.Fatalf("updated status = %q, want in_progress", got.Status)
+	}
+	if got.UploadedBytes != 3 {
+		t.Fatalf("updated uploaded_bytes = %d, want 3", got.UploadedBytes)
 	}
 
 	if err := store.DeleteHodosProgress(ctx, rec.HodosName, rec.ItemKey); err != nil {

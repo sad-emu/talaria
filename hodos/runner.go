@@ -18,6 +18,7 @@ const inProgressRefreshInterval = 500 * time.Millisecond
 
 type keyWriter interface {
 	WriteToKey(ctx context.Context, key string, data []byte) error
+	WriteToKeyWithProgress(ctx context.Context, key string, data []byte, onProgress func(uploadedBytes int64, totalBytes int64)) error
 	Close() error
 }
 
@@ -210,6 +211,7 @@ func (r *runner) write(ctx context.Context, handle any, data []byte) error {
 	if err := r.markInProgress(ctx, handle, key, int64(len(data))); err != nil {
 		return err
 	}
+	totalBytes := int64(len(data))
 
 	refreshCtx, stopRefresh := context.WithCancel(ctx)
 	defer stopRefresh()
@@ -219,7 +221,11 @@ func (r *runner) write(ctx context.Context, handle any, data []byte) error {
 		r.refreshInProgressLoop(refreshCtx, handle, key)
 	}()
 
-	if err := r.s3Sink.WriteToKey(ctx, key, data); err != nil {
+	if err := r.s3Sink.WriteToKeyWithProgress(ctx, key, data, func(uploadedBytes int64, _ int64) {
+		if err := r.updateInProgressUploaded(ctx, handle, key, uploadedBytes, totalBytes); err != nil {
+			utils.Debugf("hodos progress upload update failed name=%q item=%q: %v", r.cfg.Name, itemKey, err)
+		}
+	}); err != nil {
 		stopRefresh()
 		<-refreshDone
 		return err
@@ -278,6 +284,52 @@ func (r *runner) touchInProgress(ctx context.Context, handle any, sinkKey string
 	if p.DurationUnixNano < 0 {
 		p.DurationUnixNano = 0
 	}
+	if p.UploadedBytes < 0 {
+		p.UploadedBytes = 0
+	}
+	return r.store.UpsertHodosProgress(ctx, *p)
+}
+
+func (r *runner) updateInProgressUploaded(ctx context.Context, handle any, sinkKey string, uploadedBytes int64, totalBytes int64) error {
+	if r.store == nil {
+		return nil
+	}
+	itemKey := r.itemKey(handle)
+	if itemKey == "" {
+		return nil
+	}
+	p, err := r.store.GetHodosProgress(ctx, r.cfg.Name, itemKey)
+	if err != nil {
+		return err
+	}
+	if p == nil || !strings.EqualFold(p.Status, "in_progress") {
+		return nil
+	}
+	now := time.Now().UnixNano()
+	started := p.StartedUnixNano
+	if started <= 0 {
+		started = now
+	}
+	if totalBytes > 0 {
+		p.SizeBytes = totalBytes
+	}
+	if uploadedBytes < 0 {
+		uploadedBytes = 0
+	}
+	if p.SizeBytes > 0 && uploadedBytes > p.SizeBytes {
+		uploadedBytes = p.SizeBytes
+	}
+	if uploadedBytes < p.UploadedBytes {
+		uploadedBytes = p.UploadedBytes
+	}
+	p.SinkKey = sinkKey
+	p.StartedUnixNano = started
+	p.UpdatedUnixNano = now
+	p.DurationUnixNano = now - started
+	if p.DurationUnixNano < 0 {
+		p.DurationUnixNano = 0
+	}
+	p.UploadedBytes = uploadedBytes
 	return r.store.UpsertHodosProgress(ctx, *p)
 }
 
@@ -323,6 +375,7 @@ func (r *runner) markInProgress(ctx context.Context, handle any, sinkKey string,
 		StartedUnixNano:   now,
 		UpdatedUnixNano:   now,
 		SizeBytes:         sizeBytes,
+		UploadedBytes:     0,
 		SourceType:        sourceType,
 		SourceDetails:     sourceDetails,
 		DestinationType:   destinationType,
@@ -349,6 +402,7 @@ func (r *runner) markCompleted(ctx context.Context, handle any) error {
 	}
 	started := now
 	sizeBytes := int64(0)
+	uploadedBytes := int64(0)
 	sourceType := "local"
 	sourceDetails := itemKey
 	destinationType := "s3"
@@ -358,6 +412,7 @@ func (r *runner) markCompleted(ctx context.Context, handle any) error {
 			started = prev.StartedUnixNano
 		}
 		sizeBytes = prev.SizeBytes
+		uploadedBytes = prev.UploadedBytes
 		if strings.TrimSpace(prev.SourceType) != "" {
 			sourceType = prev.SourceType
 		}
@@ -371,6 +426,9 @@ func (r *runner) markCompleted(ctx context.Context, handle any) error {
 			destinationDetails = prev.DestinationDetail
 		}
 	}
+	if sizeBytes > 0 {
+		uploadedBytes = sizeBytes
+	}
 	return r.store.UpsertHodosProgress(ctx, persistence.HodosProgress{
 		HodosName:         r.cfg.Name,
 		ItemKey:           itemKey,
@@ -382,6 +440,7 @@ func (r *runner) markCompleted(ctx context.Context, handle any) error {
 		CompletedUnixNano: now,
 		DurationUnixNano:  now - started,
 		SizeBytes:         sizeBytes,
+		UploadedBytes:     uploadedBytes,
 		SourceType:        sourceType,
 		SourceDetails:     sourceDetails,
 		DestinationType:   destinationType,
@@ -408,6 +467,7 @@ func (r *runner) markFailed(ctx context.Context, handle any, message string) err
 	}
 	started := now
 	sizeBytes := int64(0)
+	uploadedBytes := int64(0)
 	sourceType := "local"
 	sourceDetails := itemKey
 	destinationType := "s3"
@@ -417,6 +477,7 @@ func (r *runner) markFailed(ctx context.Context, handle any, message string) err
 			started = prev.StartedUnixNano
 		}
 		sizeBytes = prev.SizeBytes
+		uploadedBytes = prev.UploadedBytes
 		if strings.TrimSpace(prev.SourceType) != "" {
 			sourceType = prev.SourceType
 		}
@@ -440,6 +501,7 @@ func (r *runner) markFailed(ctx context.Context, handle any, message string) err
 		UpdatedUnixNano:   now,
 		DurationUnixNano:  now - started,
 		SizeBytes:         sizeBytes,
+		UploadedBytes:     uploadedBytes,
 		SourceType:        sourceType,
 		SourceDetails:     sourceDetails,
 		DestinationType:   destinationType,
@@ -490,18 +552,17 @@ func (r *runner) itemKey(handle any) string {
 }
 
 func (r *runner) close() error {
-	var firstErr error
 	if r.source != nil {
-		if err := r.source.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		if err := r.source.Close(); err != nil {
+			return err
 		}
 	}
 	if r.s3Sink != nil {
-		if err := r.s3Sink.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		if err := r.s3Sink.Close(); err != nil {
+			return err
 		}
 	}
-	return firstErr
+	return nil
 }
 
 func buildS3Key(sourceDir, absPath, prefix string) string {

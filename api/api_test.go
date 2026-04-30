@@ -175,6 +175,7 @@ func TestHandleHodosTransfers_ReturnsDetailedRows(t *testing.T) {
 		CompletedUnixNano: 5000,
 		DurationUnixNano:  4000,
 		SizeBytes:         12345,
+		UploadedBytes:     12345,
 		SourceType:        "local",
 		SourceDetails:     "base=/tmp/in path=/tmp/in/a.mp4",
 		DestinationType:   "s3",
@@ -192,10 +193,12 @@ func TestHandleHodosTransfers_ReturnsDetailedRows(t *testing.T) {
 	var body struct {
 		Hodos     string `json:"hodos"`
 		Transfers []struct {
-			HodosName  string `json:"hodos_name"`
-			SizeBytes  int64  `json:"size_bytes"`
-			DurationNs int64  `json:"duration_unix_ns"`
-			Source     struct {
+			HodosName       string  `json:"hodos_name"`
+			SizeBytes       int64   `json:"size_bytes"`
+			UploadedBytes   int64   `json:"uploaded_bytes"`
+			ProgressPercent float64 `json:"progress_percent"`
+			DurationNs      int64   `json:"duration_unix_ns"`
+			Source          struct {
 				Type string `json:"type"`
 			} `json:"source"`
 			Destination struct {
@@ -218,8 +221,29 @@ func TestHandleHodosTransfers_ReturnsDetailedRows(t *testing.T) {
 	if body.Transfers[0].SizeBytes != 12345 || body.Transfers[0].DurationNs != 4000 {
 		t.Fatalf("unexpected transfer metrics: %+v", body.Transfers[0])
 	}
+	if body.Transfers[0].UploadedBytes != 12345 || body.Transfers[0].ProgressPercent != 100 {
+		t.Fatalf("unexpected transfer progress: %+v", body.Transfers[0])
+	}
 	if body.Transfers[0].Source.Type != "local" || body.Transfers[0].Destination.Type != "s3" {
 		t.Fatalf("unexpected source/destination: %+v", body.Transfers[0])
+	}
+}
+
+func TestMapTransferRow_InProgressIncludesUploadedProgress(t *testing.T) {
+	row := mapTransferRow(persistence.HodosProgress{
+		HodosName:       "local-to-s3",
+		ItemKey:         "/tmp/in/a.mp4",
+		Status:          "in_progress",
+		StartedUnixNano: time.Now().Add(-1 * time.Second).UnixNano(),
+		UpdatedUnixNano: time.Now().UnixNano(),
+		SizeBytes:       200,
+		UploadedBytes:   50,
+	})
+	if row.UploadedBytes != 50 {
+		t.Fatalf("UploadedBytes = %d, want 50", row.UploadedBytes)
+	}
+	if row.ProgressPercent != 25 {
+		t.Fatalf("ProgressPercent = %v, want 25", row.ProgressPercent)
 	}
 }
 

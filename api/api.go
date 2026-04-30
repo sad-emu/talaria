@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"strconv"
@@ -50,6 +51,8 @@ type hodosTransferRow struct {
 	DurationUnixNs  int64            `json:"duration_unix_ns"`
 	DurationMs      int64            `json:"duration_ms"`
 	SizeBytes       int64            `json:"size_bytes"`
+	UploadedBytes   int64            `json:"uploaded_bytes"`
+	ProgressPercent float64          `json:"progress_percent"`
 	Source          transferEndpoint `json:"source"`
 	Destination     transferEndpoint `json:"destination"`
 }
@@ -265,6 +268,16 @@ func mapTransferRow(p persistence.HodosProgress) hodosTransferRow {
 			durationNs = liveNs
 		}
 	}
+	uploadedBytes := p.UploadedBytes
+	if uploadedBytes < 0 {
+		uploadedBytes = 0
+	}
+	if strings.EqualFold(strings.TrimSpace(p.Status), "completed") && p.SizeBytes > 0 && uploadedBytes < p.SizeBytes {
+		uploadedBytes = p.SizeBytes
+	}
+	if p.SizeBytes > 0 && uploadedBytes > p.SizeBytes {
+		uploadedBytes = p.SizeBytes
+	}
 
 	return hodosTransferRow{
 		HodosName:       p.HodosName,
@@ -279,6 +292,8 @@ func mapTransferRow(p persistence.HodosProgress) hodosTransferRow {
 		DurationUnixNs:  durationNs,
 		DurationMs:      durationNs / int64(time.Millisecond),
 		SizeBytes:       p.SizeBytes,
+		UploadedBytes:   uploadedBytes,
+		ProgressPercent: transferProgressPercent(p.Status, p.SizeBytes, uploadedBytes),
 		Source: transferEndpoint{
 			Type:    p.SourceType,
 			Details: p.SourceDetails,
@@ -288,4 +303,18 @@ func mapTransferRow(p persistence.HodosProgress) hodosTransferRow {
 			Details: p.DestinationDetail,
 		},
 	}
+}
+
+func transferProgressPercent(status string, sizeBytes int64, uploadedBytes int64) float64 {
+	if strings.EqualFold(strings.TrimSpace(status), "completed") {
+		return 100.0
+	}
+	if sizeBytes <= 0 || uploadedBytes <= 0 {
+		return 0.0
+	}
+	pct := (float64(uploadedBytes) / float64(sizeBytes)) * 100.0
+	if pct > 100.0 {
+		pct = 100.0
+	}
+	return math.Round(pct*100) / 100
 }

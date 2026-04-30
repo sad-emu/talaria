@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -47,7 +49,7 @@ type s3Client interface {
 	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
 }
 
-type uploadFunc func(ctx context.Context, bucket string, key string, data []byte) error
+type uploadFunc func(ctx context.Context, bucket string, key string, data []byte, onProgress func(uploadedBytes int64, totalBytes int64)) error
 
 // S3Sink is a dropoff connector that writes payloads to S3.
 type S3Sink struct {
@@ -93,24 +95,31 @@ func NewS3Sink(cfg S3SinkConfig) (*S3Sink, error) {
 		u.PartSize = partSize
 	})
 
-	return newS3SinkWithClientAndUploader(cfg, client, func(ctx context.Context, bucket string, key string, data []byte) error {
+	return newS3SinkWithClientAndUploader(cfg, client, func(ctx context.Context, bucket string, key string, data []byte, onProgress func(uploadedBytes int64, totalBytes int64)) error {
 		_, err := uploader.Upload(ctx, &s3.PutObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(key),
-			Body:   bytes.NewReader(data),
+			Body:   newProgressReader(data, onProgress),
 		})
+		if err == nil && onProgress != nil {
+			onProgress(int64(len(data)), int64(len(data)))
+		}
 		return err
 	}), nil
 }
 
 func newS3SinkWithClient(cfg S3SinkConfig, client s3Client) *S3Sink {
-	return newS3SinkWithClientAndUploader(cfg, client, func(ctx context.Context, bucket string, key string, data []byte) error {
+	return newS3SinkWithClientAndUploader(cfg, client, func(ctx context.Context, bucket string, key string, data []byte, onProgress func(uploadedBytes int64, totalBytes int64)) error {
+		body := newProgressReader(data, onProgress)
 		_, err := client.PutObject(ctx, &s3.PutObjectInput{
 			Bucket:        aws.String(bucket),
 			Key:           aws.String(key),
-			Body:          bytes.NewReader(data),
+			Body:          body,
 			ContentLength: aws.Int64(int64(len(data))),
 		})
+		if err == nil && onProgress != nil {
+			onProgress(int64(len(data)), int64(len(data)))
+		}
 		return err
 	})
 }
@@ -135,11 +144,17 @@ func (s *S3Sink) Write(ctx context.Context, data []byte) error {
 	if strings.TrimSpace(s.cfg.ObjectKey) == "" {
 		return fmt.Errorf("s3 sink: ObjectKey is required for Write(); use WriteToKey() for dynamic keys")
 	}
-	return s.WriteToKey(ctx, s.cfg.ObjectKey, data)
+	return s.WriteToKeyWithProgress(ctx, s.cfg.ObjectKey, data, nil)
 }
 
 // WriteToKey writes payload data to a caller-supplied object key.
 func (s *S3Sink) WriteToKey(ctx context.Context, key string, data []byte) error {
+	return s.WriteToKeyWithProgress(ctx, key, data, nil)
+}
+
+// WriteToKeyWithProgress writes payload data to a caller-supplied object key
+// and optionally reports bytes uploaded so far.
+func (s *S3Sink) WriteToKeyWithProgress(ctx context.Context, key string, data []byte, onProgress func(uploadedBytes int64, totalBytes int64)) error {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return fmt.Errorf("s3 sink: key is required")
@@ -158,11 +173,78 @@ func (s *S3Sink) WriteToKey(ctx context.Context, key string, data []byte) error 
 		}
 	}
 
-	if err := s.uploadTo(ctx, s.cfg.Bucket, key, data); err != nil {
+	if err := s.uploadTo(ctx, s.cfg.Bucket, key, data, onProgress); err != nil {
 		return fmt.Errorf("s3 sink: upload object s3://%s/%s: %w", s.cfg.Bucket, key, err)
 	}
 
 	return nil
+}
+
+type progressReader struct {
+	reader     *bytes.Reader
+	totalBytes int64
+
+	mu         sync.Mutex
+	maxOffset  int64
+	onProgress func(uploadedBytes int64, totalBytes int64)
+}
+
+func newProgressReader(data []byte, onProgress func(uploadedBytes int64, totalBytes int64)) *progressReader {
+	pr := &progressReader{
+		reader:     bytes.NewReader(data),
+		totalBytes: int64(len(data)),
+		onProgress: onProgress,
+	}
+	if onProgress != nil {
+		onProgress(0, pr.totalBytes)
+	}
+	return pr
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.reader.Read(b)
+	if n > 0 {
+		pos, seekErr := p.reader.Seek(0, io.SeekCurrent)
+		if seekErr == nil {
+			p.recordProgress(pos)
+		}
+	}
+	return n, err
+}
+
+func (p *progressReader) ReadAt(b []byte, off int64) (int, error) {
+	n, err := p.reader.ReadAt(b, off)
+	if n > 0 {
+		p.recordProgress(off + int64(n))
+	}
+	return n, err
+}
+
+func (p *progressReader) Seek(offset int64, whence int) (int64, error) {
+	return p.reader.Seek(offset, whence)
+}
+
+func (p *progressReader) recordProgress(endOffset int64) {
+	if endOffset < 0 {
+		return
+	}
+	if endOffset > p.totalBytes {
+		endOffset = p.totalBytes
+	}
+
+	p.mu.Lock()
+	if endOffset <= p.maxOffset {
+		p.mu.Unlock()
+		return
+	}
+	p.maxOffset = endOffset
+	callback := p.onProgress
+	total := p.totalBytes
+	p.mu.Unlock()
+
+	if callback != nil {
+		callback(endOffset, total)
+	}
 }
 
 func (s *S3Sink) Close() error {

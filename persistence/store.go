@@ -56,6 +56,7 @@ type HodosProgress struct {
 	CompletedUnixNano int64
 	DurationUnixNano  int64
 	SizeBytes         int64
+	UploadedBytes     int64
 	SourceType        string
 	SourceDetails     string
 	DestinationType   string

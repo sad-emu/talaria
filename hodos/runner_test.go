@@ -78,6 +78,18 @@ func (f *fakeKeyWriter) WriteToKey(ctx context.Context, key string, data []byte)
 	f.data = append(f.data, append([]byte(nil), data...))
 	return nil
 }
+
+func (f *fakeKeyWriter) WriteToKeyWithProgress(ctx context.Context, key string, data []byte, onProgress func(uploadedBytes int64, totalBytes int64)) error {
+	if onProgress != nil {
+		onProgress(0, int64(len(data)))
+	}
+	err := f.WriteToKey(ctx, key, data)
+	if err == nil && onProgress != nil {
+		onProgress(int64(len(data)), int64(len(data)))
+	}
+	return err
+}
+
 func (f *fakeKeyWriter) Close() error { return nil }
 
 type fakeStore struct {
