@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -114,5 +115,40 @@ func TestHandleHodosProgress_WithReader_ReturnsSummaries(t *testing.T) {
 	}
 	if body.Summaries[0].HodosName != "local-to-s3" {
 		t.Fatalf("hodos name = %q, want local-to-s3", body.Summaries[0].HodosName)
+	}
+}
+
+func TestServer_StartBackground_ServesAndShutsDown(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	s := NewServer(addr)
+	if err := s.StartBackground(); err != nil {
+		t.Fatalf("StartBackground() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = s.Shutdown(context.Background())
+	})
+
+	resp, err := http.Get("http://" + addr + "/api/v1/status")
+	if err != nil {
+		t.Fatalf("GET /api/v1/status error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+	resp, err = http.Get("http://" + addr + "/api/v1/status")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatalf("expected request after shutdown to fail")
 	}
 }

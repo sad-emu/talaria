@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 
 	"talaria/persistence"
@@ -22,6 +23,7 @@ type Server struct {
 	listenAddr string
 	mux        *http.ServeMux
 	progress   hodosProgressReader
+	httpServer *http.Server
 }
 
 // NewServer creates an API server bound to listenAddr (host:port).
@@ -47,12 +49,49 @@ func (s *Server) registerRoutes() {
 
 // Start begins listening.  Returns an error if the listener cannot bind.
 func (s *Server) Start() error {
-	log.Printf("API server listening on %s", s.listenAddr)
-	srv := &http.Server{
-		Addr:    s.listenAddr,
+	ln, err := net.Listen("tcp", s.listenAddr)
+	if err != nil {
+		return fmt.Errorf("api: listen: %w", err)
+	}
+	return s.Serve(ln)
+}
+
+// StartBackground binds the listener and serves requests in a goroutine.
+func (s *Server) StartBackground() error {
+	ln, err := net.Listen("tcp", s.listenAddr)
+	if err != nil {
+		return fmt.Errorf("api: listen: %w", err)
+	}
+	go func() {
+		if err := s.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("API server stopped: %v", err)
+		}
+	}()
+	return nil
+}
+
+// Shutdown gracefully stops the API server.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.httpServer == nil {
+		return nil
+	}
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		return fmt.Errorf("api: shutdown: %w", err)
+	}
+	return nil
+}
+
+// Serve begins serving on an already-open listener.
+func (s *Server) Serve(ln net.Listener) error {
+	s.httpServer = &http.Server{
 		Handler: s.mux,
 	}
-	return fmt.Errorf("api: %w", srv.ListenAndServe())
+	log.Printf("API server listening on %s", s.listenAddr)
+	err := s.httpServer.Serve(ln)
+	if err != nil {
+		return fmt.Errorf("api: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {

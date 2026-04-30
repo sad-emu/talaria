@@ -44,6 +44,7 @@ type PeerConfig struct {
 
 // LogConfig mirrors lumberjack.Logger fields for log rotation.
 type LogConfig struct {
+	Level      string `yaml:"Level"`
 	Filename   string `yaml:"Filename"`
 	MaxSize    int    `yaml:"MaxSize"`
 	MaxBackups int    `yaml:"MaxBackups"`
@@ -148,5 +149,13 @@ func validate(cfg *Config) error {
 			cfg.Persistence.SQLitePath = "talaria.db"
 		}
 	}
+	if strings.TrimSpace(cfg.GlobalLog.Level) == "" {
+		cfg.GlobalLog.Level = "INFO"
+	}
+	logLevel := strings.ToUpper(strings.TrimSpace(cfg.GlobalLog.Level))
+	if logLevel != "DEBUG" && logLevel != "INFO" && logLevel != "ERROR" {
+		return fmt.Errorf("GlobalLog.Level must be one of DEBUG, INFO, ERROR")
+	}
+	cfg.GlobalLog.Level = logLevel
 	return nil
 }

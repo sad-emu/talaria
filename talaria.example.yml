@@ -20,6 +20,7 @@ Peers:
     HeartbeatInterval: "30s"
 
 GlobalLog:
+  Level: "INFO"      # DEBUG | INFO | ERROR
   Filename: ""        # empty = stdout
   MaxSize: 20         # MB
   MaxBackups: 5
