@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"talaria/config"
@@ -13,7 +14,6 @@ import (
 	"talaria/utils"
 )
 
-const runOnceIdleTimeout = 200 * time.Millisecond
 const inProgressRefreshInterval = 500 * time.Millisecond
 
 type keyWriter interface {
@@ -41,7 +41,16 @@ type runner struct {
 // RunConfigured executes configured hodos flows.
 // For now, local->s3 is fully supported; talaria endpoints are reserved.
 func RunConfigured(ctx context.Context, cfgs []config.HodosConfig, store persistence.TransferStore) (int, error) {
+	type runResult struct {
+		count int
+		err   error
+	}
+
 	total := 0
+	results := make(chan runResult, len(cfgs))
+	var wg sync.WaitGroup
+	runCount := 0
+
 	for i, hc := range cfgs {
 		if !hc.EnabledValue() {
 			continue
@@ -50,18 +59,35 @@ func RunConfigured(ctx context.Context, cfgs []config.HodosConfig, store persist
 		if err != nil {
 			return total, fmt.Errorf("hodos[%d] %q: %w", i, hc.Name, err)
 		}
+		runCount++
+		wg.Add(1)
+		go func(idx int, cfg config.HodosConfig, run *runner) {
+			defer wg.Done()
+			defer func() { _ = run.close() }()
 
-		var n int
-		if hc.RunOnceValue() {
-			n, err = r.runOnce(ctx)
-		} else {
-			n, err = r.runContinuous(ctx)
+			n, runErr := run.runContinuous(ctx)
+			if runErr != nil && runErr != context.Canceled {
+				results <- runResult{count: n, err: fmt.Errorf("hodos[%d] %q: %w", idx, cfg.Name, runErr)}
+				return
+			}
+			results <- runResult{count: n, err: nil}
+		}(i, hc, r)
+	}
+
+	if runCount == 0 {
+		return 0, nil
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	for res := range results {
+		total += res.count
+		if res.err != nil {
+			return total, res.err
 		}
-		_ = r.close()
-		if err != nil {
-			return total, fmt.Errorf("hodos[%d] %q: %w", i, hc.Name, err)
-		}
-		total += n
 	}
 	return total, nil
 }
@@ -78,10 +104,13 @@ func newRunner(hc config.HodosConfig, store persistence.TransferStore) (*runner,
 	}
 
 	src, err := connector.NewLocalSource(connector.LocalSourceConfig{
-		Name:      hc.Name + "-pickup-local",
-		Path:      hc.Pickup.Local.Path,
-		Recurse:   hc.Pickup.Local.Recurse,
-		KeepFiles: hc.Pickup.Local.KeepFiles,
+		Name:             hc.Name + "-pickup-local",
+		Path:             hc.Pickup.Local.Path,
+		Recurse:          hc.Pickup.Local.Recurse,
+		KeepFiles:        hc.Pickup.Local.KeepFiles,
+		FilenameContains: hc.Pickup.Local.FilenameContains,
+		IgnoreDotFiles:   hc.Pickup.Local.IgnoreDotFilesValue(),
+		PickupDelay:      time.Duration(hc.Pickup.Local.PickupDelayMs) * time.Millisecond,
 	})
 	if err != nil {
 		return nil, err
@@ -119,58 +148,16 @@ func newRunner(hc config.HodosConfig, store persistence.TransferStore) (*runner,
 	}, nil
 }
 
-func (r *runner) runOnce(ctx context.Context) (int, error) {
-	count := 0
-	for {
-		readCtx, cancel := context.WithTimeout(ctx, runOnceIdleTimeout)
-		data, handle, err := r.source.Read(readCtx)
-		cancel()
-		if err != nil {
-			if err == context.DeadlineExceeded {
-				return count, nil
-			}
-			if err == context.Canceled {
-				return count, ctx.Err()
-			}
-			return count, err
-		}
-		skipped, err := r.handleExistingCompletion(ctx, handle)
-		if err != nil {
-			return count, err
-		}
-		if skipped {
-			r.skippedCount++
-			r.logProgress("skipped", handle, "already completed")
-			continue
-		}
-		if err := r.write(ctx, handle, data); err != nil {
-			r.failedCount++
-			_ = r.markFailed(ctx, handle, fmt.Sprintf("write failed: %v", err))
-			r.logProgress("failed", handle, err.Error())
-			return count, err
-		}
-		if err := r.markCompleted(ctx, handle); err != nil {
-			return count, err
-		}
-		if err := r.source.Ack(ctx, handle); err != nil {
-			r.failedCount++
-			_ = r.markFailed(ctx, handle, fmt.Sprintf("ack failed: %v", err))
-			r.logProgress("failed", handle, err.Error())
-			return count, err
-		}
-		count++
-		r.processedCount++
-		r.logProgress("completed", handle, "")
-	}
-}
-
 func (r *runner) runContinuous(ctx context.Context) (int, error) {
 	count := 0
 	for {
 		data, handle, err := r.source.Read(ctx)
 		if err != nil {
 			if err == context.Canceled {
-				return count, ctx.Err()
+				if ctx.Err() != nil {
+					return count, ctx.Err()
+				}
+				return count, context.Canceled
 			}
 			return count, err
 		}

@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -15,10 +16,13 @@ const localSourcePollInterval = 500 * time.Millisecond
 
 // LocalSourceConfig configures a local disk pickup connector.
 type LocalSourceConfig struct {
-	Name      string
-	Path      string
-	Recurse   bool
-	KeepFiles bool
+	Name             string
+	Path             string
+	Recurse          bool
+	KeepFiles        bool
+	FilenameContains string
+	IgnoreDotFiles   bool
+	PickupDelay      time.Duration
 }
 
 // LocalSource reads files from a directory on disk.
@@ -55,7 +59,15 @@ func NewLocalSource(cfg LocalSourceConfig) (*LocalSource, error) {
 	}
 
 	return &LocalSource{
-		cfg:  LocalSourceConfig{Name: cfg.Name, Path: abs, Recurse: cfg.Recurse, KeepFiles: cfg.KeepFiles},
+		cfg: LocalSourceConfig{
+			Name:             cfg.Name,
+			Path:             abs,
+			Recurse:          cfg.Recurse,
+			KeepFiles:        cfg.KeepFiles,
+			FilenameContains: strings.TrimSpace(cfg.FilenameContains),
+			IgnoreDotFiles:   cfg.IgnoreDotFiles,
+			PickupDelay:      cfg.PickupDelay,
+		},
 		seen: make(map[string]struct{}),
 		open: true,
 	}, nil
@@ -126,6 +138,7 @@ func (s *LocalSource) Close() error {
 }
 
 func (s *LocalSource) enqueueFilesLocked() error {
+	now := time.Now()
 	entries, err := os.ReadDir(s.cfg.Path)
 	if err != nil {
 		return fmt.Errorf("local source: read dir %q: %w", s.cfg.Path, err)
@@ -135,9 +148,24 @@ func (s *LocalSource) enqueueFilesLocked() error {
 			if e.IsDir() {
 				continue
 			}
+			if s.cfg.IgnoreDotFiles && strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			if s.cfg.FilenameContains != "" && !strings.Contains(e.Name(), s.cfg.FilenameContains) {
+				continue
+			}
 			full := filepath.Join(s.cfg.Path, e.Name())
 			if _, ok := s.seen[full]; ok {
 				continue
+			}
+			if s.cfg.PickupDelay > 0 {
+				info, statErr := e.Info()
+				if statErr != nil {
+					return fmt.Errorf("local source: stat %q: %w", full, statErr)
+				}
+				if now.Sub(info.ModTime()) < s.cfg.PickupDelay {
+					continue
+				}
 			}
 			s.queue = append(s.queue, full)
 			s.seen[full] = struct{}{}
@@ -148,15 +176,36 @@ func (s *LocalSource) enqueueFilesLocked() error {
 	for _, e := range entries {
 		full := filepath.Join(s.cfg.Path, e.Name())
 		if e.IsDir() {
+			if s.cfg.IgnoreDotFiles && strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
 			err := filepath.WalkDir(full, func(path string, d fs.DirEntry, walkErr error) error {
 				if walkErr != nil {
 					return walkErr
 				}
 				if d.IsDir() {
+					if s.cfg.IgnoreDotFiles && strings.HasPrefix(d.Name(), ".") {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+				if s.cfg.IgnoreDotFiles && strings.HasPrefix(d.Name(), ".") {
+					return nil
+				}
+				if s.cfg.FilenameContains != "" && !strings.Contains(d.Name(), s.cfg.FilenameContains) {
 					return nil
 				}
 				if _, ok := s.seen[path]; ok {
 					return nil
+				}
+				if s.cfg.PickupDelay > 0 {
+					info, statErr := d.Info()
+					if statErr != nil {
+						return statErr
+					}
+					if now.Sub(info.ModTime()) < s.cfg.PickupDelay {
+						return nil
+					}
 				}
 				s.queue = append(s.queue, path)
 				s.seen[path] = struct{}{}
@@ -169,6 +218,21 @@ func (s *LocalSource) enqueueFilesLocked() error {
 		}
 		if _, ok := s.seen[full]; ok {
 			continue
+		}
+		if s.cfg.IgnoreDotFiles && strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		if s.cfg.FilenameContains != "" && !strings.Contains(e.Name(), s.cfg.FilenameContains) {
+			continue
+		}
+		if s.cfg.PickupDelay > 0 {
+			info, statErr := e.Info()
+			if statErr != nil {
+				return fmt.Errorf("local source: stat %q: %w", full, statErr)
+			}
+			if now.Sub(info.ModTime()) < s.cfg.PickupDelay {
+				continue
+			}
 		}
 		s.queue = append(s.queue, full)
 		s.seen[full] = struct{}{}

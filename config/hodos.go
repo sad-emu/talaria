@@ -6,7 +6,6 @@ import "strings"
 type HodosConfig struct {
 	Name    string `yaml:"Name"`
 	Enabled *bool  `yaml:"Enabled,omitempty"`
-	RunOnce *bool  `yaml:"RunOnce,omitempty"`
 
 	Pickup  HodosEndpointConfig `yaml:"Pickup"`
 	Dropoff HodosEndpointConfig `yaml:"Dropoff"`
@@ -23,9 +22,12 @@ type HodosEndpointConfig struct {
 
 // HodosLocalConfig configures local disk pickup/dropoff.
 type HodosLocalConfig struct {
-	Path      string `yaml:"Path"`
-	Recurse   bool   `yaml:"Recurse"`
-	KeepFiles bool   `yaml:"KeepFiles"`
+	Path             string `yaml:"Path"`
+	Recurse          bool   `yaml:"Recurse"`
+	KeepFiles        bool   `yaml:"KeepFiles"`
+	FilenameContains string `yaml:"FilenameContains,omitempty"`
+	IgnoreDotFiles   *bool  `yaml:"IgnoreDotFiles,omitempty"`
+	PickupDelayMs    int    `yaml:"PickupDelayMs,omitempty"`
 }
 
 // HodosS3Config configures S3 dropoff.
@@ -53,8 +55,8 @@ func (h HodosConfig) EnabledValue() bool {
 	return h.Enabled == nil || *h.Enabled
 }
 
-func (h HodosConfig) RunOnceValue() bool {
-	return h.RunOnce == nil || *h.RunOnce
+func (l HodosLocalConfig) IgnoreDotFilesValue() bool {
+	return l.IgnoreDotFiles == nil || *l.IgnoreDotFiles
 }
 
 func normalizeEndpointType(t string) string {

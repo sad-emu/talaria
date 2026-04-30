@@ -17,7 +17,6 @@ const VERSION = "0.0.1"
 func main() {
 	cfgPath := flag.String("config", "talaria.yml", "path to YAML config file")
 	apiListen := flag.String("api-listen", "127.0.0.1:8080", "HTTP API listen address")
-	hodosOnly := flag.Bool("hodos-only", false, "run configured hodos flows and exit")
 	flag.Parse()
 
 	utils.Infof("talaria version %s starting", VERSION)
@@ -64,16 +63,13 @@ func main() {
 	}()
 
 	if len(cfg.Hodos) > 0 {
-		count, herr := hodos.RunConfigured(context.Background(), cfg.Hodos, store)
-		if herr != nil {
-			utils.Fatalf("hodos run failed: %v", herr)
-		}
-		utils.Infof("hodos completed successfully, processed %d item(s)", count)
-	}
-
-	if *hodosOnly {
-		utils.Infof("hodos-only mode enabled: exiting after hodos run")
-		return
+		go func() {
+			count, herr := hodos.RunConfigured(context.Background(), cfg.Hodos, store)
+			if herr != nil {
+				utils.Fatalf("hodos run failed: %v", herr)
+			}
+			utils.Infof("hodos completed, processed %d item(s)", count)
+		}()
 	}
 
 	node, err := NewNode(cfg)

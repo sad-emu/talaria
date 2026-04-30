@@ -30,13 +30,15 @@ GlobalLog:
 Hodos:
   - Name: "local-to-s3-test"
     Enabled: true
-    RunOnce: true
     Pickup:
       Type: "local"
       Local:
         Path: "./pickup"
         Recurse: true
         KeepFiles: true
+        FilenameContains: ""
+        IgnoreDotFiles: true
+        PickupDelayMs: 500
     Dropoff:
       Type: "s3"
       S3:

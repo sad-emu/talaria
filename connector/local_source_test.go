@@ -182,3 +182,85 @@ func TestLocalSource_Close(t *testing.T) {
 		t.Fatal("expected Read() to fail after Close()")
 	}
 }
+
+func TestLocalSource_FilenameContainsFilter(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "movie-one.mkv"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewLocalSource(LocalSourceConfig{Path: dir, KeepFiles: true, FilenameContains: "movie"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, handle, err := s.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if string(data) != "a" {
+		t.Fatalf("Read() data = %q, want a", string(data))
+	}
+	if got := filepath.Base(handle.(string)); got != "movie-one.mkv" {
+		t.Fatalf("handle base = %q, want movie-one.mkv", got)
+	}
+}
+
+func TestLocalSource_IgnoreDotFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".hidden.txt"), []byte("h"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("v"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewLocalSource(LocalSourceConfig{Path: dir, KeepFiles: true, IgnoreDotFiles: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, handle, err := s.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if string(data) != "v" {
+		t.Fatalf("Read() data = %q, want v", string(data))
+	}
+	if got := filepath.Base(handle.(string)); got != "visible.txt" {
+		t.Fatalf("handle base = %q, want visible.txt", got)
+	}
+}
+
+func TestLocalSource_PickupDelay(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "delayed.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewLocalSource(LocalSourceConfig{Path: dir, KeepFiles: true, PickupDelay: 300 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctxShort, cancelShort := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancelShort()
+	_, _, err = s.Read(ctxShort)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected DeadlineExceeded before pickup delay, got %v", err)
+	}
+
+	ctxLong, cancelLong := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+	defer cancelLong()
+	data, _, err := s.Read(ctxLong)
+	if err != nil {
+		t.Fatalf("Read() after delay error = %v", err)
+	}
+	if string(data) != "x" {
+		t.Fatalf("Read() data = %q, want x", string(data))
+	}
+}

@@ -35,13 +35,17 @@ type fakeSource struct {
 		data   []byte
 		handle any
 	}
-	readIdx int
-	ackCnt  int
+	readIdx    int
+	ackCnt     int
+	exhaustErr error
 }
 
 func (f *fakeSource) Name() string { return "fake-source" }
 func (f *fakeSource) Read(ctx context.Context) ([]byte, any, error) {
 	if f.readIdx >= len(f.reads) {
+		if f.exhaustErr != nil {
+			return nil, nil, f.exhaustErr
+		}
 		<-ctx.Done()
 		return nil, nil, ctx.Err()
 	}
@@ -145,7 +149,7 @@ func TestRunner_StoresCompletedProgress(t *testing.T) {
 	source := &fakeSource{reads: []struct {
 		data   []byte
 		handle any
-	}{{data: []byte("payload"), handle: "/tmp/in/a.txt"}}}
+	}{{data: []byte("payload"), handle: "/tmp/in/a.txt"}}, exhaustErr: context.Canceled}
 	sink := &fakeKeyWriter{}
 
 	r := &runner{
@@ -163,9 +167,9 @@ func TestRunner_StoresCompletedProgress(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	n, err := r.runOnce(ctx)
-	if err != nil {
-		t.Fatalf("runOnce() error = %v", err)
+	n, err := r.runContinuous(ctx)
+	if err != context.Canceled {
+		t.Fatalf("runContinuous() error = %v, want context.Canceled", err)
 	}
 	if n != 1 {
 		t.Fatalf("processed = %d, want 1", n)
@@ -203,7 +207,7 @@ func TestRunner_SkipsCompletedAfterRestart(t *testing.T) {
 	source := &fakeSource{reads: []struct {
 		data   []byte
 		handle any
-	}{{data: []byte("payload"), handle: "/tmp/in/a.txt"}}}
+	}{{data: []byte("payload"), handle: "/tmp/in/a.txt"}}, exhaustErr: context.Canceled}
 	sink := &fakeKeyWriter{}
 
 	r := &runner{
@@ -221,9 +225,9 @@ func TestRunner_SkipsCompletedAfterRestart(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	n, err := r.runOnce(ctx)
-	if err != nil {
-		t.Fatalf("runOnce() error = %v", err)
+	n, err := r.runContinuous(ctx)
+	if err != context.Canceled {
+		t.Fatalf("runContinuous() error = %v, want context.Canceled", err)
 	}
 	if n != 0 {
 		t.Fatalf("processed = %d, want 0 because item was already completed", n)
@@ -238,7 +242,7 @@ func TestRunner_StoresFailedProgressOnWriteError(t *testing.T) {
 	source := &fakeSource{reads: []struct {
 		data   []byte
 		handle any
-	}{{data: []byte("payload"), handle: "/tmp/in/a.txt"}}}
+	}{{data: []byte("payload"), handle: "/tmp/in/a.txt"}}, exhaustErr: context.Canceled}
 	sink := &fakeKeyWriter{err: context.DeadlineExceeded}
 
 	r := &runner{
@@ -256,9 +260,9 @@ func TestRunner_StoresFailedProgressOnWriteError(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_, err := r.runOnce(ctx)
+	_, err := r.runContinuous(ctx)
 	if err == nil {
-		t.Fatalf("expected runOnce() error")
+		t.Fatalf("expected runContinuous() error")
 	}
 	p, err := store.GetHodosProgress(context.Background(), "flow-a", "/tmp/in/a.txt")
 	if err != nil || p == nil {
@@ -301,8 +305,8 @@ func TestRunner_RefreshesInProgressDuringWrite(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if _, err := r.runOnce(ctx); err != nil {
-		t.Fatalf("runOnce() error = %v", err)
+	if _, err := r.runContinuous(ctx); err != context.Canceled {
+		t.Fatalf("runContinuous() error = %v, want context.Canceled", err)
 	}
 
 	key := "flow-a|/tmp/in/a.txt"

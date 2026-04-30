@@ -108,6 +108,9 @@ func validate(cfg *Config) error {
 			if h.Pickup.Local == nil || strings.TrimSpace(h.Pickup.Local.Path) == "" {
 				return fmt.Errorf("Hodos[%d].Pickup.Local.Path is required for local pickup", i)
 			}
+			if h.Pickup.Local.PickupDelayMs < 0 {
+				return fmt.Errorf("Hodos[%d].Pickup.Local.PickupDelayMs must be >= 0", i)
+			}
 		case "talaria":
 			// Placeholder for upcoming talaria pickup mode.
 		default:

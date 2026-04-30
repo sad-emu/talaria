@@ -36,14 +36,34 @@ Hodos:
 	if !h.EnabledValue() {
 		t.Fatalf("EnabledValue() should default to true")
 	}
-	if !h.RunOnceValue() {
-		t.Fatalf("RunOnceValue() should default to true")
-	}
 	if cfg.Persistence.Backend != "sqlite" {
 		t.Fatalf("Persistence.Backend = %q, want sqlite", cfg.Persistence.Backend)
 	}
 	if cfg.Persistence.SQLitePath != "talaria.db" {
 		t.Fatalf("Persistence.SQLitePath = %q, want talaria.db", cfg.Persistence.SQLitePath)
+	}
+}
+
+func TestValidate_HodosLocalRejectsNegativePickupDelayMs(t *testing.T) {
+	cfg := &Config{
+		Node: NodeConfig{Name: "n", ListenPort: 7000},
+		TLS:  TLSConfig{CertFile: "c", KeyFile: "k", CAFile: "ca"},
+		Hodos: []HodosConfig{{
+			Name: "bad-delay",
+			Pickup: HodosEndpointConfig{
+				Type: "local",
+				Local: &HodosLocalConfig{
+					Path:          "/tmp/in",
+					PickupDelayMs: -1,
+				},
+			},
+			Dropoff: HodosEndpointConfig{Type: "s3", S3: &HodosS3Config{
+				Bucket: "b", ObjectKey: "k", Region: "r", AccessKeyID: "a", SecretAccessKey: "s",
+			}},
+		}},
+	}
+	if err := validate(cfg); err == nil {
+		t.Fatalf("expected error for negative PickupDelayMs")
 	}
 }
 
