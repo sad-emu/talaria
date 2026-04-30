@@ -237,6 +237,48 @@ func TestMapTransferRow_InProgressDurationIsLive(t *testing.T) {
 	}
 }
 
+func TestHandleHodosOverview_ChunkSizeInResponse(t *testing.T) {
+	reader := &fakeProgressReader{summaries: []persistence.HodosProgressSummary{
+		{HodosName: "local-to-s3", Total: 1, Completed: 1},
+		{HodosName: "other-hodos", Total: 2, Completed: 2},
+	}}
+	s := NewServerWithProgress("127.0.0.1:0", reader).
+		WithHodosChunkSizes(map[string]int{
+			"local-to-s3": 50,
+			"other-hodos": 100,
+		})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/hodos/overview", nil)
+	w := httptest.NewRecorder()
+
+	s.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var body struct {
+		Hodos []struct {
+			Name                 string `json:"name"`
+			MultipartChunkSizeMb int    `json:"multipart_chunk_size_mb"`
+		} `json:"hodos"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(body.Hodos) != 2 {
+		t.Fatalf("hodos len = %d, want 2", len(body.Hodos))
+	}
+	byName := make(map[string]int, len(body.Hodos))
+	for _, h := range body.Hodos {
+		byName[h.Name] = h.MultipartChunkSizeMb
+	}
+	if byName["local-to-s3"] != 50 {
+		t.Errorf("local-to-s3 chunk size = %d, want 50", byName["local-to-s3"])
+	}
+	if byName["other-hodos"] != 100 {
+		t.Errorf("other-hodos chunk size = %d, want 100", byName["other-hodos"])
+	}
+}
+
 func TestServer_StartBackground_ServesAndShutsDown(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

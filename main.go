@@ -43,6 +43,15 @@ func main() {
 	}
 
 	apiServer := api.NewServerWithProgress(*apiListen, store)
+	if len(cfg.Hodos) > 0 {
+		chunkSizes := make(map[string]int, len(cfg.Hodos))
+		for _, hc := range cfg.Hodos {
+			if hc.Dropoff.S3 != nil {
+				chunkSizes[hc.Name] = hc.Dropoff.S3.MultipartChunkSizeMB
+			}
+		}
+		apiServer.WithHodosChunkSizes(chunkSizes)
+	}
 	if err := apiServer.StartBackground(); err != nil {
 		utils.Fatalf("failed to start API server: %v", err)
 	}

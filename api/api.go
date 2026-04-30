@@ -23,12 +23,13 @@ type hodosProgressReader interface {
 }
 
 type hodosOverviewRow struct {
-	Name              string `json:"name"`
-	TotalFiles        int64  `json:"total_files"`
-	TransferredFiles  int64  `json:"transferred_files"`
-	TransferringFiles int64  `json:"transferring_files"`
-	FailedFiles       int64  `json:"failed_files"`
-	LastUpdatedUnixNs int64  `json:"last_updated_unix_ns"`
+	Name                 string `json:"name"`
+	TotalFiles           int64  `json:"total_files"`
+	TransferredFiles     int64  `json:"transferred_files"`
+	TransferringFiles    int64  `json:"transferring_files"`
+	FailedFiles          int64  `json:"failed_files"`
+	LastUpdatedUnixNs    int64  `json:"last_updated_unix_ns"`
+	MultipartChunkSizeMb int    `json:"multipart_chunk_size_mb"`
 }
 
 type transferEndpoint struct {
@@ -55,15 +56,23 @@ type hodosTransferRow struct {
 
 // Server serves the talaria HTTP API.
 type Server struct {
-	listenAddr string
-	mux        *http.ServeMux
-	progress   hodosProgressReader
-	httpServer *http.Server
+	listenAddr       string
+	mux              *http.ServeMux
+	progress         hodosProgressReader
+	httpServer       *http.Server
+	hodosChunkSizeMB map[string]int
 }
 
 // NewServer creates an API server bound to listenAddr (host:port).
 func NewServer(listenAddr string) *Server {
 	return NewServerWithProgress(listenAddr, nil)
+}
+
+// WithHodosChunkSizes attaches a map of hodos-name -> multipart chunk size (MB) to the
+// server so that the overview endpoint can report effective upload settings per HODOS.
+func (s *Server) WithHodosChunkSizes(m map[string]int) *Server {
+	s.hodosChunkSizeMB = m
+	return s
 }
 
 // NewServerWithProgress creates an API server with an optional hodos progress reader.
@@ -154,14 +163,18 @@ func (s *Server) handleHodosOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := make([]hodosOverviewRow, 0, len(summaries))
 	for _, summary := range summaries {
-		rows = append(rows, hodosOverviewRow{
+		row := hodosOverviewRow{
 			Name:              summary.HodosName,
 			TotalFiles:        summary.Total,
 			TransferredFiles:  summary.Completed,
 			TransferringFiles: summary.InProgress,
 			FailedFiles:       summary.Failed,
 			LastUpdatedUnixNs: summary.LastUpdatedUnixNs,
-		})
+		}
+		if s.hodosChunkSizeMB != nil {
+			row.MultipartChunkSizeMb = s.hodosChunkSizeMB[summary.HodosName]
+		}
+		rows = append(rows, row)
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"hodos": rows})
 }
